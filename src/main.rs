@@ -15,14 +15,23 @@ fn main() -> Result<()> {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
+            Ok(mut stream) => loop {
                 let mut buf = [0; 512];
-                let _ = stream.read(&mut buf)?;
-                println!("Request: {}", String::from_utf8_lossy(&buf[..]));
-
-                let response = b"+PONG\r\n";
-                let _ = stream.write(&response[..])?;
-            }
+                match stream.read(&mut buf) {
+                    Ok(n) => {
+                        if n == 0 {
+                            break;
+                        }
+                        println!("Request: {}", String::from_utf8_lossy(&buf[..]));
+                        let response = b"+PONG\r\n";
+                        let _ = stream.write(&response[..])?;
+                    }
+                    Err(e) => {
+                        println!("error: {}", e);
+                        break;
+                    }
+                }
+            },
             Err(e) => {
                 println!("error: {}", e);
             }
