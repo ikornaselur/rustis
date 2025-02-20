@@ -13,101 +13,114 @@ enum RustisError {
     IoError(#[from] std::io::Error),
 }
 
-fn handle_message(buf: &[u8]) {
-    log::info!("Data: {:?}", String::from_utf8_lossy(buf));
-    match buf {
-        b"PING\r\n" => {
-            log::info!("Received PING");
-        }
-        _ => {
-            log::warn!("Unknown command");
+const POLL_TIMEOUT: u16 = 1000; // Milliseconds
+
+fn accept_new_connections(listener: &TcpListener, connections: &mut Vec<TcpStream>) -> Result<()> {
+    loop {
+        match listener.accept() {
+            Ok((stream, addr)) => {
+                log::info!("Accepted connection from: {}", addr);
+                stream.set_nonblocking(true)?;
+                connections.push(stream);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(e) => {
+                log::error!("Accept error: {}", e);
+                break;
+            }
         }
     }
+    Ok(())
+}
+
+fn process_existing_connections(connections: &mut Vec<TcpStream>, events: &[Option<PollFlags>]) {
+    let new_connections: Vec<_> = connections
+        .drain(..)
+        .zip(events.iter())
+        .filter_map(|(mut conn, event)| {
+            if let Some(revents) = event {
+                if revents.contains(PollFlags::POLLIN) {
+                    let mut buf = [0; 1024];
+                    match conn.read(&mut buf) {
+                        Ok(0) => {
+                            log::info!("Connection closed");
+                            return None;
+                        }
+                        Ok(n) => {
+                            log::info!("Read {} bytes", n);
+                            log::info!("Data: {:?}", String::from_utf8_lossy(&buf));
+                            let response = b"+PONG\r\n";
+                            if let Err(e) = conn.write_all(response) {
+                                log::error!("Error sending PONG: {}", e);
+                                return None;
+                            } else {
+                                log::info!("Sent PONG");
+                            }
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            log::debug!("Read would block");
+                        }
+                        Err(e) => {
+                            log::error!("Read error: {}", e);
+                            return None;
+                        }
+                    }
+                }
+            }
+            Some(conn)
+        })
+        .collect();
+    *connections = new_connections;
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     let listener = TcpListener::bind("127.0.0.1:6379")?;
     listener.set_nonblocking(true)?;
-
-    let mut connections: Vec<TcpStream> = vec![];
+    let mut connections: Vec<TcpStream> = Vec::new();
 
     loop {
-        let mut poll_fds = Vec::with_capacity(1 + connections.len());
-        poll_fds.push(PollFd::new(listener.as_fd(), PollFlags::POLLIN));
+        let (listener_event, connection_events) = {
+            // We need to construct the poll_fds every time to work with the borrow checker.
+            // The overhead of this should be fine, though by the time we get into some HARD
+            // BENCHMARKING ... we'll revisit this, maybe? Probably not.
+            let mut poll_fds = Vec::with_capacity(1 + connections.len());
+            poll_fds.push(PollFd::new(listener.as_fd(), PollFlags::POLLIN));
+            for conn in &connections {
+                poll_fds.push(PollFd::new(conn.as_fd(), PollFlags::POLLIN));
+            }
 
-        for conn in &connections {
-            poll_fds.push(PollFd::new(conn.as_fd(), PollFlags::POLLIN));
-        }
-
-        match poll(&mut poll_fds, PollTimeout::from(1000u16)) {
-            Ok(n) if n > 0 => {
-                log::debug!("Events: {}", n);
-
-                // New connections
-                if let Some(events) = poll_fds[0].revents() {
-                    if events.contains(PollFlags::POLLIN) {
-                        match listener.accept() {
-                            Ok((stream, addr)) => {
-                                log::info!("Accepted connection from: {}", addr);
-                                stream.set_nonblocking(true)?;
-                                connections.push(stream);
-                            }
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                                log::debug!("Accept would block");
-                                continue;
-                            }
-                            Err(e) => {
-                                log::error!("Accept error: {}", e);
-                            }
-                        }
-                    }
+            match poll(&mut poll_fds, PollTimeout::from(POLL_TIMEOUT)) {
+                Ok(n) if n > 0 => {
+                    log::debug!("Events: {}", n);
+                    let listener_event = poll_fds[0].revents();
+                    // Since we have some events, let's map them into an event list that matches
+                    // the listener + connections, so we can process those
+                    let connection_events = poll_fds
+                        .iter()
+                        .skip(1)
+                        .map(|pfd| pfd.revents())
+                        .collect::<Vec<_>>();
+                    (listener_event, connection_events)
                 }
-
-                // Existing connections
-                connections.retain(|mut conn| {
-                    let mut buf = [0; 1024];
-                    match conn.read(&mut buf) {
-                        Ok(0) => {
-                            log::info!("Connection closed");
-                            false // Remove this connection
-                        }
-                        Ok(n) => {
-                            log::info!("Read {} bytes", n);
-                            handle_message(&buf[..n]);
-                            let response = b"+PONG\r\n";
-
-                            match conn.write_all(response) {
-                                Ok(_) => {
-                                    log::info!("Sent PONG");
-                                }
-                                Err(e) => {
-                                    log::error!("Error sending PONG: {}", e);
-                                }
-                            }
-
-                            true
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                            log::debug!("Read would block");
-                            true
-                        }
-                        Err(e) => {
-                            log::error!("Read error: {}", e);
-                            false // Remove this connection
-                        }
-                    }
-                });
+                Ok(_) => {
+                    log::trace!("Poll timeout");
+                    (None, vec![])
+                }
+                Err(e) => {
+                    log::error!("Poll error: {}", e);
+                    break;
+                }
             }
-            Ok(_) => {
-                log::trace!("Poll timeout");
-                continue;
-            }
-            Err(e) => {
-                log::error!("error: {}", e);
-                break;
+        };
+
+        if let Some(revents) = listener_event {
+            if revents.contains(PollFlags::POLLIN) {
+                accept_new_connections(&listener, &mut connections)?;
             }
         }
+
+        process_existing_connections(&mut connections, &connection_events);
     }
 
     Ok(())
