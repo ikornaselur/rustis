@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::io::AsFd;
 
+use crate::parse::parse_input;
+use crate::resp::RESPData;
 use crate::Result;
 
 const POLL_TIMEOUT: u16 = 1000;
@@ -103,14 +105,48 @@ impl Server {
                             }
                             Ok(n) => {
                                 log::info!("Read {} bytes", n);
-                                log::info!("Data: {:?}", String::from_utf8_lossy(&buf[..n]));
-                                let response = b"+PONG\r\n";
-                                if let Err(e) = conn.write_all(response) {
-                                    log::error!("Error sending PONG: {}", e);
-                                    return None;
-                                } else {
-                                    log::info!("Sent PONG");
-                                }
+                                let data = String::from_utf8_lossy(&buf[..n]);
+                                log::debug!("Data: {}", data);
+                                match parse_input(&data) {
+                                    Ok(RESPData::SimpleString(s)) => match s {
+                                        "PING" => {
+                                            log::debug!("Received PING");
+                                            conn.write_all(b"+PONG\r\n").unwrap();
+                                        }
+                                        _ => {
+                                            log::error!("Unknown command: {}", s);
+                                            return None;
+                                        }
+                                    },
+                                    Ok(RESPData::Array(array)) => match &array[..] {
+                                        [RESPData::BulkString(s)]
+                                            if s.eq_ignore_ascii_case("ping") =>
+                                        {
+                                            log::debug!("Received PING");
+                                            conn.write_all(b"+PONG\r\n").unwrap();
+                                        }
+                                        [RESPData::BulkString(s)]
+                                            if s.eq_ignore_ascii_case("command") =>
+                                        {
+                                            log::debug!("Received COMMAND");
+                                            conn.write_all(b"+OK\r\n").unwrap();
+                                        }
+                                        [RESPData::BulkString(s), RESPData::BulkString(msg)]
+                                            if s.eq_ignore_ascii_case("echo") =>
+                                        {
+                                            log::debug!("Received ECHO");
+                                            conn.write_all(b"+").unwrap();
+                                            conn.write_all(msg.as_bytes()).unwrap();
+                                            conn.write_all(b"\r\n").unwrap();
+                                        }
+                                        _ => todo!(),
+                                    },
+                                    Ok(_) => todo!(),
+                                    Err(e) => {
+                                        log::error!("Error parsing input: {}", e);
+                                        return None;
+                                    }
+                                };
                             }
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                                 log::debug!("Read would block");

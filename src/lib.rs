@@ -1,5 +1,6 @@
 mod error;
 mod parse;
+mod resp;
 mod server;
 
 pub use error::{Result, RustisError};
