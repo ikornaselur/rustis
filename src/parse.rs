@@ -17,7 +17,7 @@ use nom::{
 ///
 /// Example:
 ///
-/// ```
+/// ```ignore
 /// +OK\r\n
 /// ```
 fn nom_simple_string(input: &str) -> IResult<&str, RESPData> {
@@ -35,7 +35,8 @@ fn nom_simple_string(input: &str) -> IResult<&str, RESPData> {
 /// > exceptions, whereas the string encoded in the error type is the error message itself.
 ///
 /// Example :
-/// ```
+///
+/// ```ignore
 /// -Error message\r\n
 /// ```
 fn nom_simple_error(input: &str) -> IResult<&str, RESPData> {
@@ -50,12 +51,14 @@ fn nom_simple_error(input: &str) -> IResult<&str, RESPData> {
 /// > A bulk string represents a single binary string. The string can be of any size, but by
 /// > default, Redis limits it to 512 MB (see the proto-max-bulk-len configuration directive).
 /// > RESP encodes bulk strings in the following way:
-/// > ```
+/// >
+/// > ```ignore
 /// > $<length>\r\n<data>\r\n
 /// > ```
 ///
 /// Example:
-/// ```
+///
+/// ```ignore
 /// $5\r\nhello\r\n
 /// ```
 fn nom_bulk_string(input: &str) -> IResult<&str, RESPData> {
@@ -76,7 +79,8 @@ fn nom_bulk_string(input: &str) -> IResult<&str, RESPData> {
 /// > that returns elements of a list.
 /// >
 /// > RESP Arrays' encoding uses the following format:
-/// ```
+///
+/// ```ignore
 /// *<number-of-elements>\r\n<element-1>...<element-n>
 /// ```
 fn nom_array(input: &str) -> IResult<&str, RESPData> {
