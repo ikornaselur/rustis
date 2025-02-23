@@ -12,6 +12,12 @@ pub enum RustisError {
     InvalidInput(String),
     #[error("Parsing error: {0}")]
     NomError(String),
+    #[error("Client disconnected")]
+    ClientDisconnected,
+    #[error("Unknown command: {0}")]
+    UnknownCommand(String),
+    #[error("Read error")]
+    ReadError,
 }
 
 impl<I: std::fmt::Debug> From<NomErr<NomError<I>>> for RustisError {
