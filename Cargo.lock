@@ -337,6 +337,7 @@ dependencies = [
  "log",
  "nix",
  "nom",
+ "once_cell",
  "thiserror",
  "tokio",
 ]

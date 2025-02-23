@@ -1,4 +1,4 @@
-use crate::{error::RustisError, parse::parse_input, resp::RESPData, Result};
+use crate::{database::DATABASES, error::RustisError, parse::parse_input, resp::RESPData, Result};
 use nix::poll::PollFlags;
 use std::{
     io::{ErrorKind, Read, Write},
@@ -83,23 +83,92 @@ impl Connection {
 
     fn process_array(&mut self, array: &[RESPData]) -> Result<()> {
         match array {
-            [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"ping") => {
-                log::debug!("Received PING");
-                self.stream.write_all(b"+PONG\r\n")?;
-            }
+            [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"ping") => self.handle_ping()?,
             [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"command") => {
-                log::debug!("Received COMMAND");
-                self.stream.write_all(b"+OK\r\n")?;
+                self.handle_command()?
             }
-            [RESPData::BulkString(s), RESPData::BulkString(msg)]
-                if s.eq_ignore_ascii_case(b"echo") =>
-            {
-                log::debug!("Received ECHO");
+            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"echo") => {
+                self.handle_echo(args)?
+            }
+            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"set") => {
+                self.handle_set(args)?
+            }
+            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"get") => {
+                self.handle_get(args)?
+            }
+            _ => todo!(),
+        }
+
+        Ok(())
+    }
+
+    fn handle_ping(&mut self) -> Result<()> {
+        log::debug!("Received PING");
+        self.stream.write_all(b"+PONG\r\n")?;
+        Ok(())
+    }
+
+    fn handle_command(&mut self) -> Result<()> {
+        log::debug!("Received COMMAND");
+        self.stream.write_all(b"+OK\r\n")?;
+        Ok(())
+    }
+
+    fn handle_echo(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received ECHO");
+        match args {
+            [RESPData::BulkString(msg)] => {
                 self.stream.write_all(b"+")?;
                 self.stream.write_all(msg)?;
                 self.stream.write_all(b"\r\n")?;
             }
+            // Are multiple args supported?
             _ => todo!(),
+        }
+
+        Ok(())
+    }
+
+    fn handle_set(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received SET");
+
+        let (key, value) = match (&args[0], &args[1]) {
+            (RESPData::BulkString(k), RESPData::BulkString(v)) => (k, v),
+            _ => todo!(),
+        };
+
+        let mut dbs = DATABASES.write().unwrap();
+        if let Some(db) = dbs.get_mut(0) {
+            log::debug!("Setting key: {:?}, value: {:?}", key, value);
+            db.insert(key.to_vec(), value.to_vec());
+        }
+
+        self.stream.write_all(b"+OK\r\n")?;
+
+        Ok(())
+    }
+
+    fn handle_get(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received GET");
+
+        let key = match &args {
+            [RESPData::BulkString(k)] => k,
+            _ => todo!(),
+        };
+
+        let mut dbs = DATABASES.write().unwrap();
+        if let Some(db) = dbs.get_mut(0) {
+            if let Some(value) = db.get(&key.to_vec()) {
+                log::debug!("Found value: {:?}", value);
+                self.stream.write_all(b"$")?;
+                self.stream.write_all(value.len().to_string().as_bytes())?;
+                self.stream.write_all(b"\r\n")?;
+                self.stream.write_all(value)?;
+                self.stream.write_all(b"\r\n")?;
+            } else {
+                log::debug!("Key not found");
+                self.stream.write_all(b"$-1\r\n")?;
+            }
         }
 
         Ok(())
