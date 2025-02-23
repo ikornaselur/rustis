@@ -1,9 +1,16 @@
-use crate::{database::DATABASES, error::RustisError, parse::parse_input, resp::RESPData, Result};
+use crate::{
+    database::{DBValue, DATABASES},
+    error::RustisError,
+    parse::parse_input,
+    resp::RESPData,
+    Result,
+};
 use nix::poll::PollFlags;
 use std::{
     io::{ErrorKind, Read, Write},
     net::TcpStream,
     os::{fd::BorrowedFd, unix::io::AsFd},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) struct Connection {
@@ -63,6 +70,16 @@ impl Connection {
             }
         }
         Ok(self)
+    }
+
+    /// Helper function to write an error to the client
+    ///
+    /// The function will write "-ERR " followed by the error message and a CRLF
+    fn write_error(&mut self, error: &[u8]) -> Result<()> {
+        self.stream.write_all(b"-ERR ")?;
+        self.stream.write_all(error)?;
+        self.stream.write_all(b"\r\n")?;
+        Ok(())
     }
 
     fn process_simple_string(&mut self, string: &[u8]) -> Result<()> {
@@ -132,17 +149,148 @@ impl Connection {
     fn handle_set(&mut self, args: &[RESPData]) -> Result<()> {
         log::debug!("Received SET");
 
-        let (key, value) = match (&args[0], &args[1]) {
-            (RESPData::BulkString(k), RESPData::BulkString(v)) => (k, v),
-            _ => todo!(),
+        // TODO: Convert these write_errors to return Err and handle higher up in one place, maybe
+        // add a RustisError::ClientError?
+
+        let (key, args) = match args.split_first() {
+            Some((RESPData::BulkString(k), args)) => (k, args),
+            _ => {
+                self.write_error(b"wrong number of arguments for 'set' command")?;
+                return Ok(());
+            }
         };
+        let (value, args) = match args.split_first() {
+            Some((RESPData::BulkString(v), args)) => (v, args),
+            _ => {
+                self.write_error(b"wrong number of arguments for 'set' command")?;
+                return Ok(());
+            }
+        };
+
+        let mut ttl = None;
+
+        let mut iter = args.iter();
+        while let Some(arg) = iter.next() {
+            match arg {
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"nx") => {
+                    log::debug!("NX option");
+                    todo!();
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"xx") => {
+                    log::debug!("XX option");
+                    todo!();
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"ex") => {
+                    log::debug!("EX option");
+                    // We need to get the value for EX
+                    if let Some(RESPData::BulkString(s)) = iter.next() {
+                        let s = String::from_utf8_lossy(s);
+                        let s = match s.parse::<u128>() {
+                            Ok(s) => s,
+                            Err(_) => {
+                                log::error!("Invalid value for 'seconds'");
+                                self.write_error(b"value is not an integer or out of range")?;
+                                return Ok(());
+                            }
+                        };
+                        log::debug!("Seconds: {}", s);
+                        ttl = Some(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                                + s * 1000,
+                        );
+                    } else {
+                        self.write_error(b"value is not an integer or out of range")?;
+                        return Ok(());
+                    }
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"px") => {
+                    log::debug!("PX option");
+                    // We need to get the value for PX
+                    if let Some(RESPData::BulkString(ms)) = iter.next() {
+                        let ms = String::from_utf8_lossy(ms);
+                        let ms = match ms.parse::<u128>() {
+                            Ok(ms) => ms,
+                            Err(_) => {
+                                self.write_error(b"value is not an integer or out of range")?;
+                                return Ok(());
+                            }
+                        };
+                        log::debug!("Milliseconds: {}", ms);
+                        ttl = Some(
+                            SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis()
+                                + ms,
+                        );
+                    } else {
+                        self.write_error(b"value is not an integer or out of range")?;
+                        return Ok(());
+                    }
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"exat") => {
+                    log::debug!("EXAT option");
+                    // We need to get the value for EXAT
+                    if let Some(RESPData::BulkString(ts)) = iter.next() {
+                        let ts = String::from_utf8_lossy(ts);
+                        let ts = match ts.parse::<u128>() {
+                            Ok(ts) => ts,
+                            Err(_) => {
+                                self.write_error(b"value is not an integer or out of range")?;
+                                return Ok(());
+                            }
+                        };
+                        log::debug!("Timestamp: {}", ts);
+                        ttl = Some(ts * 1000);
+                    } else {
+                        self.write_error(b"value is not an integer or out of range")?;
+                        return Ok(());
+                    }
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"pxat") => {
+                    log::debug!("PXAT option");
+                    // We need to get the value for PXAT
+                    if let Some(RESPData::BulkString(ts)) = iter.next() {
+                        let ts = String::from_utf8_lossy(ts);
+                        let ts = match ts.parse::<u128>() {
+                            Ok(ts) => ts,
+                            Err(_) => {
+                                self.write_error(b"value is not an integer or out of range")?;
+                                return Ok(());
+                            }
+                        };
+                        log::debug!("Timestamp: {}", ts);
+                        ttl = Some(ts);
+                    } else {
+                        self.write_error(b"value is not an integer or out of range")?;
+                        return Ok(());
+                    }
+                }
+                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"keepttl") => {
+                    log::debug!("KEEPTTL option");
+                    todo!();
+                }
+                _ => {
+                    self.write_error(b"syntax error")?;
+                    return Ok(());
+                }
+            }
+        }
 
         let mut dbs = DATABASES.write().unwrap();
         if let Some(db) = dbs.get_mut(0) {
-            log::debug!("Setting key: {:?}, value: {:?}", key, value);
-            db.insert(key.to_vec(), value.to_vec());
+            if log::log_enabled!(log::Level::Debug) {
+                let key = String::from_utf8_lossy(key);
+                let value = String::from_utf8_lossy(value);
+                log::debug!("Setting key: {:?}, value: {:?}", key, value);
+            }
+            db.insert(key.to_vec(), DBValue::new(value.to_vec(), ttl));
         }
 
+        log::debug!("Responding with OK");
         self.stream.write_all(b"+OK\r\n")?;
 
         Ok(())
@@ -158,7 +306,19 @@ impl Connection {
 
         let mut dbs = DATABASES.write().unwrap();
         if let Some(db) = dbs.get_mut(0) {
-            if let Some(value) = db.get(&key.to_vec()) {
+            if let Some(DBValue { value, ttl }) = db.get(&key.to_vec()) {
+                if let Some(ttl) = ttl {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    if now > *ttl {
+                        log::debug!("Key has expired");
+                        self.stream.write_all(b"$-1\r\n")?;
+                        db.remove(&key.to_vec());
+                        return Ok(());
+                    }
+                }
                 log::debug!("Found value: {:?}", value);
                 self.stream.write_all(b"$")?;
                 self.stream.write_all(value.len().to_string().as_bytes())?;
