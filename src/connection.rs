@@ -1,4 +1,5 @@
 use crate::{
+    client_error,
     database::{DBValue, DATABASES},
     error::RustisError,
     parse::parse_input,
@@ -15,6 +16,13 @@ use std::{
 
 pub(crate) struct Connection {
     stream: TcpStream,
+}
+
+fn now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
 }
 
 impl Connection {
@@ -50,16 +58,18 @@ impl Connection {
                     log::debug!("Data: {}", data);
                 }
 
-                match parse_input(&buf[..n]) {
-                    Ok(RESPData::SimpleString(s)) => self.process_simple_string(s)?,
-                    Ok(RESPData::Array(array)) => self.process_array(&array[..])?,
-                    Ok(_) => todo!(),
-                    Err(e) => {
-                        log::error!("Error parsing input: {}", e);
-                        let data = String::from_utf8_lossy(&buf[..n]);
-                        return Err(RustisError::InvalidInput(data.to_string()));
+                match self.process_input(&buf[..n]) {
+                    Ok(()) => {}
+                    Err(RustisError::ClientError(msg)) => {
+                        log::info!("Client error: {}", msg);
+                        self.write_error(msg.as_bytes())?;
+                        return Ok(self);
                     }
-                };
+                    Err(e) => {
+                        log::error!("Error processing input: {}", e);
+                        return Err(e);
+                    }
+                }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 log::debug!("Read would block");
@@ -70,6 +80,20 @@ impl Connection {
             }
         }
         Ok(self)
+    }
+
+    fn process_input(&mut self, buf: &[u8]) -> Result<()> {
+        match parse_input(buf) {
+            Ok(RESPData::SimpleString(s)) => self.process_simple_string(s)?,
+            Ok(RESPData::Array(array)) => self.process_array(&array[..])?,
+            Ok(_) => todo!(),
+            Err(e) => {
+                log::error!("Error parsing input: {}", e);
+                let data = String::from_utf8_lossy(buf);
+                return Err(RustisError::InvalidInput(data.to_string()));
+            }
+        };
+        Ok(())
     }
 
     /// Helper function to write an error to the client
@@ -113,6 +137,7 @@ impl Connection {
             [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"get") => {
                 self.handle_get(args)?
             }
+            // ERR unknown command '<command>', with args beginning with: ???
             _ => todo!(),
         }
 
@@ -149,21 +174,16 @@ impl Connection {
     fn handle_set(&mut self, args: &[RESPData]) -> Result<()> {
         log::debug!("Received SET");
 
-        // TODO: Convert these write_errors to return Err and handle higher up in one place, maybe
-        // add a RustisError::ClientError?
-
         let (key, args) = match args.split_first() {
             Some((RESPData::BulkString(k), args)) => (k, args),
             _ => {
-                self.write_error(b"wrong number of arguments for 'set' command")?;
-                return Ok(());
+                return client_error!("wrong number of arguments for 'set' command");
             }
         };
         let (value, args) = match args.split_first() {
             Some((RESPData::BulkString(v), args)) => (v, args),
             _ => {
-                self.write_error(b"wrong number of arguments for 'set' command")?;
-                return Ok(());
+                return client_error!("wrong number of arguments for 'set' command");
             }
         };
 
@@ -181,69 +201,51 @@ impl Connection {
                     todo!();
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"ex") => {
-                    log::debug!("EX option");
+                    log::trace!("EX option");
                     // We need to get the value for EX
                     if let Some(RESPData::BulkString(s)) = iter.next() {
                         let s = String::from_utf8_lossy(s);
                         let s = match s.parse::<u128>() {
                             Ok(s) => s,
                             Err(_) => {
-                                log::error!("Invalid value for 'seconds'");
-                                self.write_error(b"value is not an integer or out of range")?;
-                                return Ok(());
+                                return client_error!("value is not an integer or out of range");
                             }
                         };
-                        log::debug!("Seconds: {}", s);
-                        ttl = Some(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis()
-                                + s * 1000,
-                        );
+                        log::trace!("Seconds: {}", s);
+                        ttl = Some(now() + s * 1000);
                     } else {
-                        self.write_error(b"value is not an integer or out of range")?;
-                        return Ok(());
+                        return client_error!("value is not an integer or out of range");
                     }
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"px") => {
-                    log::debug!("PX option");
+                    log::trace!("PX option");
                     // We need to get the value for PX
                     if let Some(RESPData::BulkString(ms)) = iter.next() {
                         let ms = String::from_utf8_lossy(ms);
                         let ms = match ms.parse::<u128>() {
                             Ok(ms) => ms,
                             Err(_) => {
-                                self.write_error(b"value is not an integer or out of range")?;
-                                return Ok(());
+                                return client_error!("value is not an integer or out of range");
                             }
                         };
-                        log::debug!("Milliseconds: {}", ms);
-                        ttl = Some(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis()
-                                + ms,
-                        );
+                        log::trace!("Milliseconds: {}", ms);
+                        ttl = Some(now() + ms);
                     } else {
-                        self.write_error(b"value is not an integer or out of range")?;
-                        return Ok(());
+                        return client_error!("value is not an integer or out of range");
                     }
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"exat") => {
-                    log::debug!("EXAT option");
+                    log::trace!("EXAT option");
                     // We need to get the value for EXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
                         let ts = match ts.parse::<u128>() {
                             Ok(ts) => ts,
                             Err(_) => {
-                                self.write_error(b"value is not an integer or out of range")?;
-                                return Ok(());
+                                return client_error!("value is not an integer or out of range");
                             }
                         };
-                        log::debug!("Timestamp: {}", ts);
+                        log::trace!("Timestamp: {}", ts);
                         ttl = Some(ts * 1000);
                     } else {
                         self.write_error(b"value is not an integer or out of range")?;
@@ -251,22 +253,20 @@ impl Connection {
                     }
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"pxat") => {
-                    log::debug!("PXAT option");
+                    log::trace!("PXAT option");
                     // We need to get the value for PXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
                         let ts = match ts.parse::<u128>() {
                             Ok(ts) => ts,
                             Err(_) => {
-                                self.write_error(b"value is not an integer or out of range")?;
-                                return Ok(());
+                                return client_error!("value is not an integer or out of range");
                             }
                         };
-                        log::debug!("Timestamp: {}", ts);
+                        log::trace!("Timestamp: {}", ts);
                         ttl = Some(ts);
                     } else {
-                        self.write_error(b"value is not an integer or out of range")?;
-                        return Ok(());
+                        return client_error!("value is not an integer or out of range");
                     }
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"keepttl") => {
@@ -274,8 +274,7 @@ impl Connection {
                     todo!();
                 }
                 _ => {
-                    self.write_error(b"syntax error")?;
-                    return Ok(());
+                    return client_error!("syntax error");
                 }
             }
         }
@@ -290,7 +289,7 @@ impl Connection {
             db.insert(key.to_vec(), DBValue::new(value.to_vec(), ttl));
         }
 
-        log::debug!("Responding with OK");
+        log::trace!("Responding with OK");
         self.stream.write_all(b"+OK\r\n")?;
 
         Ok(())

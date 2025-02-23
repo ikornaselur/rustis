@@ -18,6 +18,8 @@ pub enum RustisError {
     UnknownCommand(String),
     #[error("Read error")]
     ReadError,
+    #[error("Client error: {0}")]
+    ClientError(String),
 }
 
 impl<I: std::fmt::Debug> From<NomErr<NomError<I>>> for RustisError {
@@ -28,4 +30,11 @@ impl<I: std::fmt::Debug> From<NomErr<NomError<I>>> for RustisError {
             NomErr::Failure(e) => RustisError::NomError(format!("{:?}", e)),
         }
     }
+}
+
+#[macro_export]
+macro_rules! client_error {
+    ($($arg:tt)*) => {
+        Err(RustisError::ClientError(format!($($arg)*)))
+    };
 }

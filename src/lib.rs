@@ -1,5 +1,6 @@
 mod connection;
 mod database;
+#[macro_use]
 mod error;
 mod parse;
 mod resp;
