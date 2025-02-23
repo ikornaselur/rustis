@@ -3,8 +3,8 @@ use crate::resp::RESPData;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until},
-    character::complete::crlf,
-    combinator::map,
+    character::complete::digit1,
+    combinator::{map, map_res},
     multi::count,
     sequence::delimited,
     IResult, Parser,
@@ -20,10 +20,11 @@ use nom::{
 /// ```ignore
 /// +OK\r\n
 /// ```
-fn nom_simple_string(input: &str) -> IResult<&str, RESPData> {
-    map(delimited(tag("+"), take_until("\r\n"), crlf), |s: &str| {
-        RESPData::SimpleString(s)
-    })
+fn nom_simple_string(input: &[u8]) -> IResult<&[u8], RESPData> {
+    map(
+        delimited(tag(&b"+"[..]), take_until(&b"\r\n"[..]), tag(&b"\r\n"[..])),
+        |s: &[u8]| RESPData::SimpleString(s),
+    )
     .parse(input)
 }
 
@@ -39,10 +40,11 @@ fn nom_simple_string(input: &str) -> IResult<&str, RESPData> {
 /// ```ignore
 /// -Error message\r\n
 /// ```
-fn nom_simple_error(input: &str) -> IResult<&str, RESPData> {
-    map(delimited(tag("-"), take_until("\r\n"), crlf), |s: &str| {
-        RESPData::SimpleError(s)
-    })
+fn nom_simple_error(input: &[u8]) -> IResult<&[u8], RESPData> {
+    map(
+        delimited(tag(&b"-"[..]), take_until(&b"\r\n"[..]), tag(&b"\r\n"[..])),
+        |s: &[u8]| RESPData::SimpleError(s),
+    )
     .parse(input)
 }
 
@@ -61,13 +63,18 @@ fn nom_simple_error(input: &str) -> IResult<&str, RESPData> {
 /// ```ignore
 /// $5\r\nhello\r\n
 /// ```
-fn nom_bulk_string(input: &str) -> IResult<&str, RESPData> {
-    let (input, length) = map(delimited(tag("$"), take_until("\r\n"), crlf), |s: &str| {
-        s.parse::<usize>().unwrap()
-    })
+fn nom_bulk_string(input: &[u8]) -> IResult<&[u8], RESPData> {
+    let (input, length) = map_res(
+        delimited(tag(&b"$"[..]), digit1, tag(&b"\r\n"[..])),
+        |digits: &[u8]| {
+            std::str::from_utf8(digits)
+                .map_err(|e| e.to_string())
+                .and_then(|s| s.parse::<usize>().map_err(|e| e.to_string()))
+        },
+    )
     .parse(input)?;
     let (input, data) = take(length).parse(input)?;
-    let (input, _) = crlf.parse(input)?;
+    let (input, _) = tag(&b"\r\n"[..]).parse(input)?;
 
     Ok((input, RESPData::BulkString(data)))
 }
@@ -83,18 +90,23 @@ fn nom_bulk_string(input: &str) -> IResult<&str, RESPData> {
 /// ```ignore
 /// *<number-of-elements>\r\n<element-1>...<element-n>
 /// ```
-fn nom_array(input: &str) -> IResult<&str, RESPData> {
-    let (input, array_length) = map(delimited(tag("*"), take_until("\r\n"), crlf), |s: &str| {
-        s.parse::<usize>().unwrap()
-    })
+fn nom_array(input: &[u8]) -> IResult<&[u8], RESPData> {
+    let (input, length) = map_res(
+        delimited(tag(&b"*"[..]), digit1, tag(&b"\r\n"[..])),
+        |digits: &[u8]| {
+            std::str::from_utf8(digits)
+                .map_err(|e| e.to_string())
+                .and_then(|s| s.parse::<usize>().map_err(|e| e.to_string()))
+        },
+    )
     .parse(input)?;
 
-    let (input, elements) = count(nom_data, array_length).parse(input)?;
+    let (input, elements) = count(nom_data, length).parse(input)?;
 
     Ok((input, RESPData::Array(elements)))
 }
 
-fn nom_data(input: &str) -> IResult<&str, RESPData> {
+fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
     let mut parser = alt((
         nom_simple_string,
         nom_simple_error,
@@ -117,7 +129,7 @@ fn nom_data(input: &str) -> IResult<&str, RESPData> {
 }
 
 /// Parse input into RESPData
-pub(crate) fn parse_input(input: &str) -> Result<RESPData> {
+pub(crate) fn parse_input(input: &[u8]) -> Result<RESPData> {
     let (input, data) = match nom_data(input) {
         Ok((input, data)) => (input, data),
         Err(e) => return Err(RustisError::InvalidInput(format!("{}", e))),
@@ -138,82 +150,92 @@ mod tests {
     #[test]
     fn test_nom_simple_string() {
         assert_eq!(
-            nom_simple_string("+OK\r\n"),
-            Ok(("", RESPData::SimpleString("OK")))
+            nom_simple_string(b"+OK\r\n"),
+            Ok((&b""[..], RESPData::SimpleString(b"OK")))
         );
     }
 
     #[test]
     fn test_nom_simple_error() {
         assert_eq!(
-            nom_simple_error("-Error message\r\n"),
-            Ok(("", RESPData::SimpleError("Error message")))
+            nom_simple_error(b"-Error message\r\n"),
+            Ok((&b""[..], RESPData::SimpleError(b"Error message")))
         );
 
         assert_eq!(
-            nom_simple_error("-ERR unknown command 'foobar'\r\n"),
-            Ok(("", RESPData::SimpleError("ERR unknown command 'foobar'")))
+            nom_simple_error(b"-ERR unknown command 'foobar'\r\n"),
+            Ok((
+                &b""[..],
+                RESPData::SimpleError(b"ERR unknown command 'foobar'")
+            ))
         );
     }
 
     #[test]
     fn test_nom_bulk_string() {
         assert_eq!(
-            nom_bulk_string("$5\r\nhello\r\n"),
-            Ok(("", RESPData::BulkString("hello")))
+            nom_bulk_string(b"$5\r\nhello\r\n"),
+            Ok((&b""[..], RESPData::BulkString(b"hello")))
         );
 
         assert_eq!(
-            nom_bulk_string("$0\r\n\r\n"),
-            Ok(("", RESPData::BulkString("")))
+            nom_bulk_string(b"$0\r\n\r\n"),
+            Ok((&b""[..], RESPData::BulkString(b"")))
         );
 
         assert_eq!(
-            nom_bulk_string("$4\r\na\r\nb\r\n"),
-            Ok(("", RESPData::BulkString("a\r\nb")))
+            nom_bulk_string(b"$4\r\na\r\nb\r\n"),
+            Ok((&b""[..], RESPData::BulkString(b"a\r\nb")))
         );
     }
 
     #[test]
-    fn test_nom_array() {
+    fn test_nom_array_empty() {
         assert_eq!(
-            nom_array("*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"),
+            nom_array(b"*0\r\n"),
+            Ok((&b""[..], RESPData::Array(vec![])))
+        );
+    }
+
+    #[test]
+    fn test_nom_array_with_values() {
+        assert_eq!(
+            nom_array(b"*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"),
             Ok((
-                "",
+                &b""[..],
                 RESPData::Array(vec![
-                    RESPData::BulkString("foo"),
-                    RESPData::BulkString("bar")
+                    RESPData::BulkString(b"foo"),
+                    RESPData::BulkString(b"bar")
                 ])
             ))
         );
-        assert_eq!(nom_array("*0\r\n"), Ok(("", RESPData::Array(vec![]))));
     }
 
     #[test]
     fn test_parse_input() {
         assert_eq!(
-            parse_input("+OK\r\n").unwrap(),
-            RESPData::SimpleString("OK")
+            parse_input(b"+OK\r\n").unwrap(),
+            RESPData::SimpleString(b"OK")
         );
         assert_eq!(
-            parse_input("-Error message\r\n").unwrap(),
-            RESPData::SimpleError("Error message")
+            parse_input(b"-Error message\r\n").unwrap(),
+            RESPData::SimpleError(b"Error message")
         );
         assert_eq!(
-            parse_input("$5\r\nhello\r\n").unwrap(),
-            RESPData::BulkString("hello")
+            parse_input(b"$5\r\nhello\r\n").unwrap(),
+            RESPData::BulkString(b"hello")
         );
     }
 
     #[test]
     fn test_parse_input_invalid() {
         assert!(matches!(
-            parse_input("invalid input").unwrap_err(),
+            parse_input(b"invalid input").unwrap_err(),
             RustisError::InvalidInput(_)
         ));
 
         assert!(matches!(
-            parse_input("+OK\r\nextra data").unwrap_err(),
+            parse_input(b"+OK\r\nextra data").unwrap_err(),
             RustisError::InvalidInput(_)
         ));
     }

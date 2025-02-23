@@ -31,34 +31,38 @@ impl Connection {
                     }
                     Ok(n) => {
                         log::info!("Read {} bytes", n);
-                        let data = String::from_utf8_lossy(&buf[..n]);
-                        log::debug!("Data: {}", data);
-                        match parse_input(&data) {
+                        if log::log_enabled!(log::Level::Debug) {
+                            let data = String::from_utf8_lossy(&buf[..n]);
+                            log::debug!("Data: {}", data);
+                        }
+
+                        match parse_input(&buf[..n]) {
                             Ok(RESPData::SimpleString(s)) => match s {
-                                "PING" => {
+                                b"PING" => {
                                     log::debug!("Received PING");
                                     self.stream.write_all(b"+PONG\r\n")?;
                                 }
                                 _ => {
-                                    log::error!("Unknown command: {}", s);
-                                    return Err(RustisError::UnknownCommand(s.to_string()));
+                                    let data = String::from_utf8_lossy(&buf[..n]);
+                                    log::error!("Unknown command: {}", data);
+                                    return Err(RustisError::UnknownCommand(data.to_string()));
                                 }
                             },
                             Ok(RESPData::Array(array)) => match &array[..] {
-                                [RESPData::BulkString(s)] if s.eq_ignore_ascii_case("ping") => {
+                                [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"ping") => {
                                     log::debug!("Received PING");
                                     self.stream.write_all(b"+PONG\r\n")?;
                                 }
-                                [RESPData::BulkString(s)] if s.eq_ignore_ascii_case("command") => {
+                                [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"command") => {
                                     log::debug!("Received COMMAND");
                                     self.stream.write_all(b"+OK\r\n")?;
                                 }
                                 [RESPData::BulkString(s), RESPData::BulkString(msg)]
-                                    if s.eq_ignore_ascii_case("echo") =>
+                                    if s.eq_ignore_ascii_case(b"echo") =>
                                 {
                                     log::debug!("Received ECHO");
                                     self.stream.write_all(b"+")?;
-                                    self.stream.write_all(msg.as_bytes())?;
+                                    self.stream.write_all(msg)?;
                                     self.stream.write_all(b"\r\n")?;
                                 }
                                 _ => todo!(),
@@ -66,6 +70,7 @@ impl Connection {
                             Ok(_) => todo!(),
                             Err(e) => {
                                 log::error!("Error parsing input: {}", e);
+                                let data = String::from_utf8_lossy(&buf[..n]);
                                 return Err(RustisError::InvalidInput(data.to_string()));
                             }
                         };

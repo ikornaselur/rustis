@@ -1,9 +1,9 @@
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RESPData<'a> {
-    SimpleString(&'a str),
-    SimpleError(&'a str),
+    SimpleString(&'a [u8]),
+    SimpleError(&'a [u8]),
     // Integer(i64),
-    BulkString(&'a str),
+    BulkString(&'a [u8]),
     Array(Vec<RESPData<'a>>),
     // Null,
     // Boolean(bool),
