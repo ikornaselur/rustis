@@ -128,11 +128,11 @@ fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
     parser.parse(input)
 }
 
-/// Parse input into RESPData
+/// Parse input into `RESPData`
 pub(crate) fn parse_input(input: &[u8]) -> Result<RESPData> {
     let (input, data) = match nom_data(input) {
         Ok((input, data)) => (input, data),
-        Err(e) => return Err(RustisError::InvalidInput(format!("{}", e))),
+        Err(e) => return Err(RustisError::InvalidInput(format!("{e}"))),
     };
 
     // XXX: Is there a reason there might be extra data?

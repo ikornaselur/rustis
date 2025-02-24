@@ -43,7 +43,7 @@ impl Server {
                 }
                 Err(e) => {
                     log::error!("Poll error: {}", e);
-                    panic!("Poll error: {}", e);
+                    return Err(e.into());
                 }
             }
         };

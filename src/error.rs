@@ -20,14 +20,15 @@ pub enum RustisError {
     ReadError,
     #[error("Client error: {0}")]
     ClientError(String),
+    #[error("Poll error: {0}")]
+    PollError(#[from] nix::Error),
 }
 
 impl<I: std::fmt::Debug> From<NomErr<NomError<I>>> for RustisError {
     fn from(err: NomErr<NomError<I>>) -> Self {
         match err {
             NomErr::Incomplete(_) => RustisError::NomError("Incomplete input".to_string()),
-            NomErr::Error(e) => RustisError::NomError(format!("{:?}", e)),
-            NomErr::Failure(e) => RustisError::NomError(format!("{:?}", e)),
+            NomErr::Error(e) | NomErr::Failure(e) => RustisError::NomError(format!("{e:?}")),
         }
     }
 }

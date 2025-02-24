@@ -14,6 +14,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const BUFFER_SIZE: usize = 32 * 1024;
+
 pub(crate) struct Connection {
     stream: TcpStream,
 }
@@ -36,16 +38,16 @@ impl Connection {
     }
 
     pub(crate) fn process_event(mut self, event: Option<&PollFlags>) -> Result<Self> {
-        let revents = match event {
-            Some(e) => e,
-            None => return Ok(self),
+        let Some(revents) = event else {
+            return Ok(self);
         };
 
         if !revents.contains(PollFlags::POLLIN) {
             return Ok(self);
         }
 
-        let mut buf = [0; 1024];
+        // TODO: Is there a performance improvement to be done here? Reuse a buffer?
+        let mut buf = [0; BUFFER_SIZE];
         match self.stream.read(&mut buf) {
             Ok(0) => {
                 log::info!("Connection closed");
@@ -126,16 +128,16 @@ impl Connection {
         match array {
             [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"ping") => self.handle_ping()?,
             [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"command") => {
-                self.handle_command()?
+                self.handle_command()?;
             }
             [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"echo") => {
-                self.handle_echo(args)?
+                self.handle_echo(args)?;
             }
             [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"set") => {
-                self.handle_set(args)?
+                self.handle_set(args)?;
             }
             [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"get") => {
-                self.handle_get(args)?
+                self.handle_get(args)?;
             }
             // ERR unknown command '<command>', with args beginning with: ???
             _ => todo!(),
@@ -174,17 +176,11 @@ impl Connection {
     fn handle_set(&mut self, args: &[RESPData]) -> Result<()> {
         log::debug!("Received SET");
 
-        let (key, args) = match args.split_first() {
-            Some((RESPData::BulkString(k), args)) => (k, args),
-            _ => {
-                return client_error!("wrong number of arguments for 'set' command");
-            }
+        let Some((RESPData::BulkString(key), args)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'set' command");
         };
-        let (value, args) = match args.split_first() {
-            Some((RESPData::BulkString(v), args)) => (v, args),
-            _ => {
-                return client_error!("wrong number of arguments for 'set' command");
-            }
+        let Some((RESPData::BulkString(value), args)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'set' command");
         };
 
         let mut ttl = None;
@@ -205,11 +201,8 @@ impl Connection {
                     // We need to get the value for EX
                     if let Some(RESPData::BulkString(s)) = iter.next() {
                         let s = String::from_utf8_lossy(s);
-                        let s = match s.parse::<u128>() {
-                            Ok(s) => s,
-                            Err(_) => {
-                                return client_error!("value is not an integer or out of range");
-                            }
+                        let Ok(s) = s.parse::<u128>() else {
+                            return client_error!("value is not an integer or out of range");
                         };
                         log::trace!("Seconds: {}", s);
                         ttl = Some(now() + s * 1000);
@@ -222,11 +215,8 @@ impl Connection {
                     // We need to get the value for PX
                     if let Some(RESPData::BulkString(ms)) = iter.next() {
                         let ms = String::from_utf8_lossy(ms);
-                        let ms = match ms.parse::<u128>() {
-                            Ok(ms) => ms,
-                            Err(_) => {
-                                return client_error!("value is not an integer or out of range");
-                            }
+                        let Ok(ms) = ms.parse::<u128>() else {
+                            return client_error!("value is not an integer or out of range");
                         };
                         log::trace!("Milliseconds: {}", ms);
                         ttl = Some(now() + ms);
@@ -239,11 +229,8 @@ impl Connection {
                     // We need to get the value for EXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
-                        let ts = match ts.parse::<u128>() {
-                            Ok(ts) => ts,
-                            Err(_) => {
-                                return client_error!("value is not an integer or out of range");
-                            }
+                        let Ok(ts) = ts.parse::<u128>() else {
+                            return client_error!("value is not an integer or out of range");
                         };
                         log::trace!("Timestamp: {}", ts);
                         ttl = Some(ts * 1000);
@@ -257,11 +244,8 @@ impl Connection {
                     // We need to get the value for PXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
-                        let ts = match ts.parse::<u128>() {
-                            Ok(ts) => ts,
-                            Err(_) => {
-                                return client_error!("value is not an integer or out of range");
-                            }
+                        let Ok(ts) = ts.parse::<u128>() else {
+                            return client_error!("value is not an integer or out of range");
                         };
                         log::trace!("Timestamp: {}", ts);
                         ttl = Some(ts);
@@ -298,9 +282,8 @@ impl Connection {
     fn handle_get(&mut self, args: &[RESPData]) -> Result<()> {
         log::debug!("Received GET");
 
-        let key = match &args {
-            [RESPData::BulkString(k)] => k,
-            _ => todo!(),
+        let [RESPData::BulkString(key)] = &args else {
+            todo!()
         };
 
         let mut dbs = DATABASES.write().unwrap();
