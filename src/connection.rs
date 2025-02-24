@@ -184,6 +184,7 @@ impl Connection {
         };
 
         let mut ttl = None;
+        let mut keep_ttl = false;
 
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
@@ -255,7 +256,7 @@ impl Connection {
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"keepttl") => {
                     log::debug!("KEEPTTL option");
-                    todo!();
+                    keep_ttl = true;
                 }
                 _ => {
                     return client_error!("syntax error");
@@ -270,6 +271,14 @@ impl Connection {
                 let value = String::from_utf8_lossy(value);
                 log::debug!("Setting key: {:?}, value: {:?}", key, value);
             }
+
+            // If keep_ttl is set, we need to check if it was previously set to reuse
+            if keep_ttl {
+                if let Some(DBValue { ttl: old_ttl, .. }) = db.get(&key.to_vec()) {
+                    ttl = *old_ttl;
+                }
+            }
+
             db.insert(key.to_vec(), DBValue::new(value.to_vec(), ttl));
         }
 
