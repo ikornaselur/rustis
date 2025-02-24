@@ -16,6 +16,9 @@ use std::{
 
 const BUFFER_SIZE: usize = 32 * 1024;
 
+const NULL: &[u8] = b"$-1\r\n";
+const OK: &[u8] = b"+OK\r\n";
+
 pub(crate) struct Connection {
     stream: TcpStream,
 }
@@ -54,10 +57,10 @@ impl Connection {
                 return Err(RustisError::ClientDisconnected);
             }
             Ok(n) => {
-                log::info!("Read {} bytes", n);
+                log::trace!("Read {} bytes", n);
                 if log::log_enabled!(log::Level::Debug) {
                     let data = String::from_utf8_lossy(&buf[..n]);
-                    log::debug!("Data: {}", data);
+                    log::trace!("Data: {:?}", data);
                 }
 
                 match self.process_input(&buf[..n]) {
@@ -154,7 +157,7 @@ impl Connection {
 
     fn handle_command(&mut self) -> Result<()> {
         log::debug!("Received COMMAND");
-        self.stream.write_all(b"+OK\r\n")?;
+        self.stream.write_all(OK)?;
         Ok(())
     }
 
@@ -184,6 +187,8 @@ impl Connection {
         };
 
         let mut ttl = None;
+        let mut nx = false;
+        let mut xx = false;
         let mut keep_ttl = false;
 
         let mut iter = args.iter();
@@ -191,14 +196,17 @@ impl Connection {
             match arg {
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"nx") => {
                     log::debug!("NX option");
-                    todo!();
+                    nx = true;
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"xx") => {
                     log::debug!("XX option");
-                    todo!();
+                    xx = true;
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"ex") => {
                     log::trace!("EX option");
+                    if ttl.is_some() {
+                        return client_error!("syntax error");
+                    }
                     // We need to get the value for EX
                     if let Some(RESPData::BulkString(s)) = iter.next() {
                         let s = String::from_utf8_lossy(s);
@@ -213,6 +221,9 @@ impl Connection {
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"px") => {
                     log::trace!("PX option");
+                    if ttl.is_some() {
+                        return client_error!("syntax error");
+                    }
                     // We need to get the value for PX
                     if let Some(RESPData::BulkString(ms)) = iter.next() {
                         let ms = String::from_utf8_lossy(ms);
@@ -227,6 +238,9 @@ impl Connection {
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"exat") => {
                     log::trace!("EXAT option");
+                    if ttl.is_some() {
+                        return client_error!("syntax error");
+                    }
                     // We need to get the value for EXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
@@ -242,6 +256,9 @@ impl Connection {
                 }
                 RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"pxat") => {
                     log::trace!("PXAT option");
+                    if ttl.is_some() {
+                        return client_error!("syntax error");
+                    }
                     // We need to get the value for PXAT
                     if let Some(RESPData::BulkString(ts)) = iter.next() {
                         let ts = String::from_utf8_lossy(ts);
@@ -264,12 +281,31 @@ impl Connection {
             }
         }
 
+        // These are mutually exclusive
+        if nx && xx {
+            return client_error!("syntax error");
+        }
+
         let mut dbs = DATABASES.write().unwrap();
         if let Some(db) = dbs.get_mut(0) {
             if log::log_enabled!(log::Level::Debug) {
                 let key = String::from_utf8_lossy(key);
                 let value = String::from_utf8_lossy(value);
-                log::debug!("Setting key: {:?}, value: {:?}", key, value);
+                log::debug!("SET {:?} = {:?}", key, value);
+            }
+
+            // If NX is set, then we only set the key if it does not already exist
+            if nx && db.contains_key(&key.to_vec()) {
+                log::trace!("Key already exists");
+                self.stream.write_all(NULL)?;
+                return Ok(());
+            }
+
+            // If XX is set, then we only set the key if it *does* already exist
+            if xx && !db.contains_key(&key.to_vec()) {
+                log::trace!("Key does not exist");
+                self.stream.write_all(NULL)?;
+                return Ok(());
             }
 
             // If keep_ttl is set, we need to check if it was previously set to reuse
@@ -283,7 +319,7 @@ impl Connection {
         }
 
         log::trace!("Responding with OK");
-        self.stream.write_all(b"+OK\r\n")?;
+        self.stream.write_all(OK)?;
 
         Ok(())
     }
@@ -305,7 +341,7 @@ impl Connection {
                         .as_millis();
                     if now > *ttl {
                         log::debug!("Key has expired");
-                        self.stream.write_all(b"$-1\r\n")?;
+                        self.stream.write_all(NULL)?;
                         db.remove(&key.to_vec());
                         return Ok(());
                     }
@@ -318,7 +354,7 @@ impl Connection {
                 self.stream.write_all(b"\r\n")?;
             } else {
                 log::debug!("Key not found");
-                self.stream.write_all(b"$-1\r\n")?;
+                self.stream.write_all(NULL)?;
             }
         }
 

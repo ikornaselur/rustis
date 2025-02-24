@@ -13,5 +13,5 @@ So far..
 
 * PING
 * ECHO message
-* SET key value [EX seconds|PX milliseconds] [NX|XX] [KEEPTTL]
+* SET key value [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds] [NX|XX] [KEEPTTL]
 * GET key
