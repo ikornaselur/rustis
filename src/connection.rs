@@ -1,5 +1,4 @@
 use crate::{
-    client_error,
     database::{DBValue, DATABASES},
     error::RustisError,
     parse::parse_input,
@@ -10,7 +9,10 @@ use nix::poll::PollFlags;
 use std::{
     io::{ErrorKind, Read, Write},
     net::TcpStream,
-    os::{fd::BorrowedFd, unix::io::AsFd},
+    os::{
+        fd::BorrowedFd,
+        unix::io::{AsFd, AsRawFd},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -40,6 +42,10 @@ impl Connection {
         self.stream.as_fd()
     }
 
+    pub(crate) fn as_raw_fd(&self) -> i32 {
+        self.stream.as_raw_fd()
+    }
+
     pub(crate) fn process_event(mut self, event: Option<&PollFlags>) -> Result<Self> {
         let Some(revents) = event else {
             return Ok(self);
@@ -58,10 +64,7 @@ impl Connection {
             }
             Ok(n) => {
                 log::trace!("Read {} bytes", n);
-                if log::log_enabled!(log::Level::Debug) {
-                    let data = String::from_utf8_lossy(&buf[..n]);
-                    log::trace!("Data: {:?}", data);
-                }
+                log::trace!("Data: {:?}", String::from_utf8_lossy(&buf[..n]));
 
                 match self.process_input(&buf[..n]) {
                     Ok(()) => {}
@@ -288,11 +291,11 @@ impl Connection {
 
         let mut dbs = DATABASES.write().unwrap();
         if let Some(db) = dbs.get_mut(0) {
-            if log::log_enabled!(log::Level::Debug) {
-                let key = String::from_utf8_lossy(key);
-                let value = String::from_utf8_lossy(value);
-                log::debug!("SET {:?} = {:?}", key, value);
-            }
+            log::debug!(
+                "SET {:?} = {:?}",
+                String::from_utf8_lossy(key),
+                String::from_utf8_lossy(value)
+            );
 
             // If NX is set, then we only set the key if it does not already exist
             if nx && db.contains_key(&key.to_vec()) {

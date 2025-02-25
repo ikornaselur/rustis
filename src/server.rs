@@ -1,12 +1,23 @@
 use crate::{connection::Connection, Result};
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use std::{io::ErrorKind, net::TcpListener, os::unix::io::AsFd};
+use nix::{
+    poll::{poll, PollFd, PollFlags, PollTimeout},
+    unistd::{close, fork, ForkResult},
+};
+use std::{
+    io::ErrorKind,
+    net::TcpListener,
+    os::unix::io::{AsFd, AsRawFd},
+    process,
+    time::{Duration, Instant},
+};
 
 const POLL_TIMEOUT: u16 = 1000;
+const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Server {
     listener: TcpListener,
     connections: Vec<Connection>,
+    last_snapshot: Instant,
 }
 
 impl Server {
@@ -16,9 +27,16 @@ impl Server {
         Ok(Server {
             listener,
             connections: Vec::new(),
+            last_snapshot: Instant::now(),
         })
     }
 
+    /// Run the event loop once
+    ///
+    /// This will:
+    ///     * Poll for events on the listener, accepting new connections
+    ///     * Poll for events on the existing connections, processing them
+    ///     * Fork the process (at a configurable interval), save a snapshot and exit (the child)
     pub fn run_once(&mut self) -> Result<()> {
         // We need to keep track of how many connections exist when we poll, so that we can only
         // drain those when we handle existing connections
@@ -55,12 +73,42 @@ impl Server {
         }
 
         self.process_existing_connections(&connection_events, polled_count);
+
+        if self.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
+            self.fork_and_save();
+            self.last_snapshot = Instant::now();
+        }
+
         Ok(())
     }
 
     pub fn run_forever(&mut self) -> Result<()> {
         loop {
             self.run_once()?;
+        }
+    }
+
+    fn fork_and_save(&self) {
+        match unsafe { fork() } {
+            Ok(ForkResult::Child) => {
+                log::debug!("Saving snapshot");
+
+                log::trace!("Closing all connections in forked snapshot saver");
+                for conn in &self.connections {
+                    let _ = close(conn.as_raw_fd());
+                }
+                let _ = close(self.listener.as_raw_fd());
+
+                // TODO: Save snapshot
+
+                process::exit(0);
+            }
+            Ok(ForkResult::Parent { child }) => {
+                log::trace!("Forked child process with PID: {}", child);
+            }
+            Err(e) => {
+                log::error!("Fork error: {}", e);
+            }
         }
     }
 
