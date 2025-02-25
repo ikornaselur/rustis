@@ -32,6 +32,21 @@ fn now() -> u128 {
         .as_millis()
 }
 
+fn parse_u128_arg<'a, I>(iter: &mut I) -> Result<u128>
+where
+    I: Iterator<Item = &'a RESPData<'a>>,
+{
+    if let Some(RESPData::BulkString(raw)) = iter.next() {
+        let s = String::from_utf8_lossy(raw);
+        let Ok(s) = s.parse::<u128>() else {
+            return client_error!("value is not an integer or out of range");
+        };
+        Ok(s)
+    } else {
+        client_error!("syntax error")
+    }
+}
+
 impl Connection {
     pub(crate) fn new(stream: TcpStream) -> Result<Self> {
         stream.set_nonblocking(true)?;
@@ -195,86 +210,45 @@ impl Connection {
         let mut keep_ttl = false;
 
         let mut iter = args.iter();
-        while let Some(arg) = iter.next() {
-            match arg {
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"nx") => {
+        while let Some(RESPData::BulkString(arg)) = iter.next() {
+            match arg.to_ascii_uppercase().as_slice() {
+                b"NX" => {
                     log::debug!("NX option");
                     nx = true;
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"xx") => {
+                b"XX" => {
                     log::debug!("XX option");
                     xx = true;
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"ex") => {
+                b"EX" => {
                     log::trace!("EX option");
                     if ttl.is_some() {
                         return client_error!("syntax error");
                     }
-                    // We need to get the value for EX
-                    if let Some(RESPData::BulkString(s)) = iter.next() {
-                        let s = String::from_utf8_lossy(s);
-                        let Ok(s) = s.parse::<u128>() else {
-                            return client_error!("value is not an integer or out of range");
-                        };
-                        log::trace!("Seconds: {}", s);
-                        ttl = Some(now() + s * 1000);
-                    } else {
-                        return client_error!("value is not an integer or out of range");
-                    }
+                    ttl = Some(now() + parse_u128_arg(&mut iter)? * 1000);
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"px") => {
+                b"PX" => {
                     log::trace!("PX option");
                     if ttl.is_some() {
                         return client_error!("syntax error");
                     }
-                    // We need to get the value for PX
-                    if let Some(RESPData::BulkString(ms)) = iter.next() {
-                        let ms = String::from_utf8_lossy(ms);
-                        let Ok(ms) = ms.parse::<u128>() else {
-                            return client_error!("value is not an integer or out of range");
-                        };
-                        log::trace!("Milliseconds: {}", ms);
-                        ttl = Some(now() + ms);
-                    } else {
-                        return client_error!("value is not an integer or out of range");
-                    }
+                    ttl = Some(now() + parse_u128_arg(&mut iter)?);
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"exat") => {
+                b"EXAT" => {
                     log::trace!("EXAT option");
                     if ttl.is_some() {
                         return client_error!("syntax error");
                     }
-                    // We need to get the value for EXAT
-                    if let Some(RESPData::BulkString(ts)) = iter.next() {
-                        let ts = String::from_utf8_lossy(ts);
-                        let Ok(ts) = ts.parse::<u128>() else {
-                            return client_error!("value is not an integer or out of range");
-                        };
-                        log::trace!("Timestamp: {}", ts);
-                        ttl = Some(ts * 1000);
-                    } else {
-                        self.write_error(b"value is not an integer or out of range")?;
-                        return Ok(());
-                    }
+                    ttl = Some(parse_u128_arg(&mut iter)? * 1000);
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"pxat") => {
+                b"PXAT" => {
                     log::trace!("PXAT option");
                     if ttl.is_some() {
                         return client_error!("syntax error");
                     }
-                    // We need to get the value for PXAT
-                    if let Some(RESPData::BulkString(ts)) = iter.next() {
-                        let ts = String::from_utf8_lossy(ts);
-                        let Ok(ts) = ts.parse::<u128>() else {
-                            return client_error!("value is not an integer or out of range");
-                        };
-                        log::trace!("Timestamp: {}", ts);
-                        ttl = Some(ts);
-                    } else {
-                        return client_error!("value is not an integer or out of range");
-                    }
+                    ttl = Some(parse_u128_arg(&mut iter)?);
                 }
-                RESPData::BulkString(s) if s.eq_ignore_ascii_case(b"keepttl") => {
+                b"KEEPTTL" => {
                     log::debug!("KEEPTTL option");
                     keep_ttl = true;
                 }

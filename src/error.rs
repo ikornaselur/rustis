@@ -22,6 +22,8 @@ pub enum RustisError {
     ClientError(String),
     #[error("Poll error: {0}")]
     PollError(#[from] nix::Error),
+    #[error("Parse int error")]
+    ParseIntError(#[from] std::num::ParseIntError),
 }
 
 impl<I: std::fmt::Debug> From<NomErr<NomError<I>>> for RustisError {
