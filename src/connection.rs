@@ -3,26 +3,31 @@ use crate::{
     error::RustisError,
     parse::parse_input,
     resp::RESPData,
-    Result,
+    Config, Result,
 };
 use nix::poll::PollFlags;
 use std::{
+    cell::RefCell,
     io::{ErrorKind, Read, Write},
     net::TcpStream,
     os::{
         fd::BorrowedFd,
         unix::io::{AsFd, AsRawFd},
     },
+    rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const BUFFER_SIZE: usize = 32 * 1024;
 
+const CRLF: &[u8] = b"\r\n";
 const NULL: &[u8] = b"$-1\r\n";
+const EMPTY_ARRAY: &[u8] = b"*0\r\n";
 const OK: &[u8] = b"+OK\r\n";
 
 pub(crate) struct Connection {
     stream: TcpStream,
+    config: Rc<RefCell<Config>>,
 }
 
 fn now() -> u128 {
@@ -48,9 +53,9 @@ where
 }
 
 impl Connection {
-    pub(crate) fn new(stream: TcpStream) -> Result<Self> {
+    pub(crate) fn new(stream: TcpStream, config: Rc<RefCell<Config>>) -> Result<Self> {
         stream.set_nonblocking(true)?;
-        Ok(Connection { stream })
+        Ok(Connection { stream, config })
     }
 
     pub(crate) fn as_fd(&self) -> BorrowedFd {
@@ -71,7 +76,7 @@ impl Connection {
         }
 
         // TODO: Is there a performance improvement to be done here? Reuse a buffer?
-        let mut buf = [0; BUFFER_SIZE];
+        let mut buf = vec![0; BUFFER_SIZE].into_boxed_slice();
         match self.stream.read(&mut buf) {
             Ok(0) => {
                 log::info!("Connection closed");
@@ -125,7 +130,34 @@ impl Connection {
     fn write_error(&mut self, error: &[u8]) -> Result<()> {
         self.stream.write_all(b"-ERR ")?;
         self.stream.write_all(error)?;
-        self.stream.write_all(b"\r\n")?;
+        self.stream.write_all(CRLF)?;
+        Ok(())
+    }
+
+    /// Helper function to write an Array to the client
+    fn write_array(&mut self, array: Vec<&[u8]>) -> Result<()> {
+        let element_count = array.len();
+
+        // Write the array header
+        self.stream.write_all(b"*")?;
+        self.stream
+            .write_all(element_count.to_string().as_bytes())?;
+        self.stream.write_all(CRLF)?;
+
+        array.iter().for_each(|element| {
+            self.write_bulk_string(element).unwrap();
+        });
+
+        Ok(())
+    }
+
+    /// Helper function to write a BulkString
+    fn write_bulk_string(&mut self, data: &[u8]) -> Result<()> {
+        self.stream.write_all(b"$")?;
+        self.stream.write_all(data.len().to_string().as_bytes())?;
+        self.stream.write_all(CRLF)?;
+        self.stream.write_all(data)?;
+        self.stream.write_all(CRLF)?;
         Ok(())
     }
 
@@ -146,22 +178,18 @@ impl Connection {
     }
 
     fn process_array(&mut self, array: &[RESPData]) -> Result<()> {
-        match array {
-            [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"ping") => self.handle_ping()?,
-            [RESPData::BulkString(s)] if s.eq_ignore_ascii_case(b"command") => {
-                self.handle_command()?;
+        if let Some(RESPData::BulkString(s)) = array.first() {
+            match s.to_ascii_uppercase().as_slice() {
+                b"PING" => self.handle_ping()?,
+                b"COMMAND" => self.handle_command()?,
+                b"ECHO" => self.handle_echo(&array[1..])?,
+                b"SET" => self.handle_set(&array[1..])?,
+                b"GET" => self.handle_get(&array[1..])?,
+                b"CONFIG" => self.handle_config(&array[1..])?,
+                _ => todo!(),
             }
-            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"echo") => {
-                self.handle_echo(args)?;
-            }
-            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"set") => {
-                self.handle_set(args)?;
-            }
-            [RESPData::BulkString(s), args @ ..] if s.eq_ignore_ascii_case(b"get") => {
-                self.handle_get(args)?;
-            }
-            // ERR unknown command '<command>', with args beginning with: ???
-            _ => todo!(),
+        } else {
+            todo!()
         }
 
         Ok(())
@@ -185,13 +213,66 @@ impl Connection {
             [RESPData::BulkString(msg)] => {
                 self.stream.write_all(b"+")?;
                 self.stream.write_all(msg)?;
-                self.stream.write_all(b"\r\n")?;
+                self.stream.write_all(CRLF)?;
             }
             // Are multiple args supported?
             _ => todo!(),
         }
 
         Ok(())
+    }
+
+    fn handle_config(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received CONFIG");
+
+        let Some((RESPData::BulkString(subcommand), args)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'config' command");
+        };
+
+        match subcommand.to_ascii_uppercase().as_slice() {
+            b"GET" => self.handle_config_get(args)?,
+            b"SET" => self.handle_config_set(args)?,
+            _ => todo!(),
+        }
+
+        Ok(())
+    }
+
+    fn handle_config_get(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received CONFIG GET");
+        let Some((RESPData::BulkString(key), _)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'config|get' command");
+        };
+
+        // TODO: Config support getting multiple config values at the same time, for now we just
+        // support one
+
+        match key.to_ascii_uppercase().as_slice() {
+            b"DBFILENAME" => {
+                let dbfilename = {
+                    let config = self.config.borrow();
+                    config.dbfilename.clone()
+                };
+
+                self.write_array(vec![&b"dbfilename"[..], dbfilename.as_bytes()])?;
+            }
+            b"DIR" => {
+                let dir = {
+                    let config = self.config.borrow();
+                    config.dir.clone()
+                };
+
+                self.write_array(vec![&b"dir"[..], &dir.as_bytes()])?;
+            }
+            _ => {
+                self.stream.write_all(EMPTY_ARRAY)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_config_set(&mut self, _args: &[RESPData]) -> Result<()> {
+        todo!();
     }
 
     fn handle_set(&mut self, args: &[RESPData]) -> Result<()> {
@@ -324,11 +405,7 @@ impl Connection {
                     }
                 }
                 log::debug!("Found value: {:?}", value);
-                self.stream.write_all(b"$")?;
-                self.stream.write_all(value.len().to_string().as_bytes())?;
-                self.stream.write_all(b"\r\n")?;
-                self.stream.write_all(value)?;
-                self.stream.write_all(b"\r\n")?;
+                self.write_bulk_string(value)?;
             } else {
                 log::debug!("Key not found");
                 self.stream.write_all(NULL)?;

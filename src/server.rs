@@ -1,13 +1,15 @@
-use crate::{connection::Connection, Result};
+use crate::{connection::Connection, Config, Result};
 use nix::{
     poll::{poll, PollFd, PollFlags, PollTimeout},
     unistd::{close, fork, ForkResult},
 };
 use std::{
+    cell::RefCell,
     io::ErrorKind,
     net::TcpListener,
     os::unix::io::{AsFd, AsRawFd},
     process,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -18,16 +20,21 @@ pub struct Server {
     listener: TcpListener,
     connections: Vec<Connection>,
     last_snapshot: Instant,
+    config: Rc<RefCell<Config>>,
 }
 
 impl Server {
-    pub fn new(addr: &str) -> Result<Self> {
-        let listener = TcpListener::bind(addr)?;
+    pub fn new(config: Rc<RefCell<Config>>) -> Result<Self> {
+        let listener = {
+            let config = config.borrow();
+            TcpListener::bind(config.listen_addr())?
+        };
         listener.set_nonblocking(true)?;
         Ok(Server {
             listener,
             connections: Vec::new(),
             last_snapshot: Instant::now(),
+            config,
         })
     }
 
@@ -117,7 +124,8 @@ impl Server {
             match self.listener.accept() {
                 Ok((stream, addr)) => {
                     log::info!("Accepted connection from: {}", addr);
-                    self.connections.push(Connection::new(stream)?);
+                    self.connections
+                        .push(Connection::new(stream, Rc::clone(&self.config))?);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
