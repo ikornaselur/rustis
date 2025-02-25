@@ -138,26 +138,32 @@ impl Connection {
     fn write_array(&mut self, array: Vec<&[u8]>) -> Result<()> {
         let element_count = array.len();
 
-        // Write the array header
-        self.stream.write_all(b"*")?;
-        self.stream
-            .write_all(element_count.to_string().as_bytes())?;
-        self.stream.write_all(CRLF)?;
+        let mut buf = Vec::new();
+        buf.push(b'*');
+        write!(buf, "{}\r\n", element_count)?;
 
         array.iter().for_each(|element| {
-            self.write_bulk_string(element).unwrap();
+            buf.push(b'$');
+            write!(buf, "{}\r\n", element.len()).unwrap();
+            buf.extend_from_slice(element);
+            buf.extend_from_slice(CRLF);
         });
+
+        self.stream.write_all(&buf)?;
 
         Ok(())
     }
 
     /// Helper function to write a BulkString
     fn write_bulk_string(&mut self, data: &[u8]) -> Result<()> {
-        self.stream.write_all(b"$")?;
-        self.stream.write_all(data.len().to_string().as_bytes())?;
-        self.stream.write_all(CRLF)?;
-        self.stream.write_all(data)?;
-        self.stream.write_all(CRLF)?;
+        let mut buf = Vec::new();
+        buf.push(b'$');
+        write!(buf, "{}\r\n", data.len()).unwrap();
+        buf.extend_from_slice(data);
+        buf.extend_from_slice(CRLF);
+
+        self.stream.write_all(&buf)?;
+
         Ok(())
     }
 
@@ -211,9 +217,12 @@ impl Connection {
         log::debug!("Received ECHO");
         match args {
             [RESPData::BulkString(msg)] => {
-                self.stream.write_all(b"+")?;
-                self.stream.write_all(msg)?;
-                self.stream.write_all(CRLF)?;
+                let mut buf = Vec::new();
+                buf.push(b'+');
+                buf.extend_from_slice(msg);
+                buf.extend_from_slice(CRLF);
+
+                self.stream.write_all(&buf)?;
             }
             // Are multiple args supported?
             _ => todo!(),
