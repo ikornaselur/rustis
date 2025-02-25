@@ -23,10 +23,18 @@ So far..
 Usage: redis-starter-rust [OPTIONS]
 
 Options:
-  -d, --dir <DIR>                The path to the directory where the RDB file is stored [default: /tmp/redis-data]
-      --dbfilename <DBFILENAME>  [default: dump.rdb]
-  -H, --host <HOST>              [default: 127.0.0.1]
-  -p, --port <PORT>              [default: 6379]
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -d, --dir <DIR>
+          The path to the directory where the RDB file is stored [default: /tmp/redis-data]
+      --dbfilename <DBFILENAME>
+          [default: dump.rdb]
+  -H, --host <HOST>
+          [default: 127.0.0.1]
+  -p, --port <PORT>
+          [default: 6379]
+      --snapshot-interval <SNAPSHOT_INTERVAL>
+          [default: 300]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```

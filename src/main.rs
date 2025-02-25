@@ -20,6 +20,10 @@ struct Args {
     // Port to listen on
     #[arg(short, long, default_value = "6379")]
     port: u16,
+
+    // Snapshot interval
+    #[arg(long, default_value = "300")]
+    snapshot_interval: u64,
 }
 
 fn main() -> Result<()> {
@@ -32,6 +36,7 @@ fn main() -> Result<()> {
         dbfilename: args.dbfilename,
         host: args.host,
         port: args.port,
+        snapshot_interval: args.snapshot_interval,
     }));
 
     let mut server = Server::new(config)?;

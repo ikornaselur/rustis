@@ -4,6 +4,7 @@ pub struct Config {
     pub dbfilename: String,
     pub host: String,
     pub port: u16,
+    pub snapshot_interval: u64,
 }
 
 impl Config {

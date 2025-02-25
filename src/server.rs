@@ -14,26 +14,31 @@ use std::{
 };
 
 const POLL_TIMEOUT: u16 = 1000;
-const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(300);
 
 pub struct Server {
     listener: TcpListener,
     connections: Vec<Connection>,
     last_snapshot: Instant,
+    snapshot_interval: Duration,
     config: Rc<RefCell<Config>>,
 }
 
 impl Server {
     pub fn new(config: Rc<RefCell<Config>>) -> Result<Self> {
-        let listener = {
+        let (listener, snapshot_interval) = {
             let config = config.borrow();
-            TcpListener::bind(config.listen_addr())?
+
+            (
+                TcpListener::bind(config.listen_addr())?,
+                Duration::from_secs(config.snapshot_interval),
+            )
         };
         listener.set_nonblocking(true)?;
         Ok(Server {
             listener,
             connections: Vec::new(),
             last_snapshot: Instant::now(),
+            snapshot_interval,
             config,
         })
     }
@@ -81,7 +86,7 @@ impl Server {
 
         self.process_existing_connections(&connection_events, polled_count);
 
-        if self.last_snapshot.elapsed() >= SNAPSHOT_INTERVAL {
+        if self.last_snapshot.elapsed() >= self.snapshot_interval {
             self.fork_and_save();
             self.last_snapshot = Instant::now();
         }
