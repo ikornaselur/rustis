@@ -1,7 +1,7 @@
 use crate::{
     database::{DBValue, DATABASES},
     error::RustisError,
-    parse::parse_input,
+    parsers,
     resp::RESPData,
     Config, Result,
 };
@@ -111,7 +111,7 @@ impl Connection {
     }
 
     fn process_input(&mut self, buf: &[u8]) -> Result<()> {
-        for data in parse_input(buf)? {
+        for data in parsers::resp_data::parse(buf)? {
             match data {
                 RESPData::SimpleString(s) => self.process_simple_string(s)?,
                 RESPData::Array(array) => self.process_array(&array[..])?,

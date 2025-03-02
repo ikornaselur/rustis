@@ -3,7 +3,7 @@ mod error;
 mod config;
 mod connection;
 mod database;
-mod parse;
+mod parsers;
 mod resp;
 mod server;
 
