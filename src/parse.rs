@@ -129,15 +129,19 @@ fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
 }
 
 /// Parse input into `RESPData`
-pub(crate) fn parse_input(input: &[u8]) -> Result<RESPData> {
-    let (input, data) = match nom_data(input) {
-        Ok((input, data)) => (input, data),
-        Err(e) => return Err(RustisError::InvalidInput(format!("{e}"))),
-    };
+pub(crate) fn parse_input(input: &[u8]) -> Result<Vec<RESPData>> {
+    let mut data = vec![];
 
-    // XXX: Is there a reason there might be extra data?
-    if !input.is_empty() {
-        return Err(RustisError::InvalidInput("Extra data found".to_string()));
+    let mut input = input;
+
+    while !input.is_empty() {
+        match nom_data(input) {
+            Ok((remaining, d)) => {
+                data.push(d);
+                input = remaining;
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
 
     Ok(data)

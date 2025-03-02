@@ -95,6 +95,7 @@ impl Server {
     }
 
     pub fn run_forever(&mut self) -> Result<()> {
+        log::debug!("Starting event loop");
         loop {
             self.run_once()?;
         }

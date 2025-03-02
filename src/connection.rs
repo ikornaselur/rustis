@@ -111,16 +111,13 @@ impl Connection {
     }
 
     fn process_input(&mut self, buf: &[u8]) -> Result<()> {
-        match parse_input(buf) {
-            Ok(RESPData::SimpleString(s)) => self.process_simple_string(s)?,
-            Ok(RESPData::Array(array)) => self.process_array(&array[..])?,
-            Ok(_) => todo!(),
-            Err(e) => {
-                log::error!("Error parsing input: {}", e);
-                let data = String::from_utf8_lossy(buf);
-                return Err(RustisError::InvalidInput(data.to_string()));
+        for data in parse_input(buf)? {
+            match data {
+                RESPData::SimpleString(s) => self.process_simple_string(s)?,
+                RESPData::Array(array) => self.process_array(&array[..])?,
+                _ => todo!(),
             }
-        };
+        }
         Ok(())
     }
 
@@ -192,6 +189,7 @@ impl Connection {
                 b"SET" => self.handle_set(&array[1..])?,
                 b"GET" => self.handle_get(&array[1..])?,
                 b"CONFIG" => self.handle_config(&array[1..])?,
+                b"CLIENT" => self.handle_client(&array[1..])?,
                 _ => todo!(),
             }
         } else {
@@ -243,6 +241,15 @@ impl Connection {
             b"SET" => self.handle_config_set(args)?,
             _ => todo!(),
         }
+
+        Ok(())
+    }
+
+    fn handle_client(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received CLIENT");
+
+        // TODO: Set this somewhere.. Now we just tell the client that we've set this
+        self.stream.write_all(OK)?;
 
         Ok(())
     }
