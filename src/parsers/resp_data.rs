@@ -107,7 +107,7 @@ fn nom_array(input: &[u8]) -> IResult<&[u8], RESPData> {
 }
 
 fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
-    let mut parser = alt((
+    alt((
         nom_simple_string,
         nom_simple_error,
         nom_bulk_string,
@@ -123,9 +123,8 @@ fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
         // nom_attribute,
         // nom_set,
         // nom_push,
-    ));
-
-    parser.parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse input into `RESPData`
