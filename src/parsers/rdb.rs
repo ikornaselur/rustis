@@ -65,61 +65,61 @@ fn nom_rdb_op_code(input: &[u8]) -> IResult<&[u8], OpCode> {
 ///     If the first byte is 0xC3 (0b11000011): LZF-compressed (not supported)
 ///
 /// If the first 8 bits are 0b10000000:
-///     Ignore the remaining 6 bits of the first byte,
-///     size is 32 bit (next 4 bytes), big endian:
+///     Size is 32 bit (next 4 bytes), big endian:
 ///     Example: 0b10000000 00000000 00000000 01000010 01101000 -> 17000
 ///
 /// If the first 8 bits are 0b10000001:
-///     Ignore the remaining 6 bits of the first byte,
-///     size is 64 bit (next 8 bytes), big endian:
-///
+///     Size is 64 bit (next 8 bytes), big endian:
 ///
 /// TODO: Do I need to support the output being 8u/u16/u32/u64 with an enum?
 fn nom_size_encoding(input: &[u8]) -> IResult<&[u8], usize> {
     let (input, first_byte) = take(1usize).parse(input)?;
 
-    match first_byte[0] >> 6 {
-        0b00 => Ok((input, first_byte[0] as usize & 0b0011_1111)),
-        0b01 => {
+    let encoding_type = first_byte[0] >> 6;
+    let first_byte_data = first_byte[0] & 0b0011_1111;
+
+    match (encoding_type, first_byte_data) {
+        (0b00, _) => Ok((input, first_byte_data as usize)),
+        (0b01, _) => {
             let (input, second_byte) = take(1usize).parse(input)?;
             Ok((
                 input,
-                ((first_byte[0] as usize & 0b0011_1111) << 8) | second_byte[0] as usize,
+                u16::from_be_bytes([first_byte_data, second_byte[0]]) as usize,
             ))
         }
-        0b10 if first_byte[0] == 0b10000000 => {
+        (0b10, 0) => {
             let (input, bytes) = take(4usize).parse(input)?;
             Ok((
                 input,
                 u32::from_be_bytes(bytes.try_into().unwrap()) as usize,
             ))
         }
-        0b10 if first_byte[0] == 0b10000001 => {
+        (0b10, 1) => {
             let (input, bytes) = take(8usize).parse(input)?;
             Ok((
                 input,
                 u64::from_be_bytes(bytes.try_into().unwrap()) as usize,
             ))
         }
-        0b11 if first_byte[0] == 0b11000000 => {
+        (0b11, 0) => {
             let (input, bytes) = take(1usize).parse(input)?;
             Ok((input, u8::from_le_bytes(bytes.try_into().unwrap()) as usize))
         }
-        0b11 if first_byte[0] == 0b11000001 => {
+        (0b11, 1) => {
             let (input, bytes) = take(2usize).parse(input)?;
             Ok((
                 input,
                 u16::from_le_bytes(bytes.try_into().unwrap()) as usize,
             ))
         }
-        0b11 if first_byte[0] == 0b11000010 => {
+        (0b11, 2) => {
             let (input, bytes) = take(4usize).parse(input)?;
             Ok((
                 input,
                 u32::from_le_bytes(bytes.try_into().unwrap()) as usize,
             ))
         }
-        0b11 if first_byte[0] == 0b11000011 => {
+        (0b11, 3) => {
             // LZF-compressed
             unimplemented!()
         }
