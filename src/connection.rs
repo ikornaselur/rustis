@@ -245,7 +245,7 @@ impl Connection {
         Ok(())
     }
 
-    fn handle_client(&mut self, args: &[RESPData]) -> Result<()> {
+    fn handle_client(&mut self, _args: &[RESPData]) -> Result<()> {
         log::debug!("Received CLIENT");
 
         // TODO: Set this somewhere.. Now we just tell the client that we've set this

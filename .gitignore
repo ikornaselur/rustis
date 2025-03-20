@@ -8,3 +8,8 @@ target/
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
+
+# Redis rdb file for testing
+dump.rdb
+# Breakdown of the file for testing
+dump.rdb.txt
