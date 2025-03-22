@@ -1,4 +1,4 @@
-use crate::{connection::Connection, Config, Result};
+use crate::{connection::Connection, database::load_rdb, Config, Result};
 use nix::{
     poll::{poll, PollFd, PollFlags, PollTimeout},
     unistd::{close, fork, ForkResult},
@@ -8,6 +8,7 @@ use std::{
     io::ErrorKind,
     net::TcpListener,
     os::unix::io::{AsFd, AsRawFd},
+    path::Path,
     process,
     rc::Rc,
     time::{Duration, Instant},
@@ -33,7 +34,21 @@ impl Server {
                 Duration::from_secs(config.snapshot_interval),
             )
         };
+
         listener.set_nonblocking(true)?;
+
+        // Check if the dbfilename exists
+        let db_path = {
+            let config = config.borrow();
+            format!("{}/{}", config.dir(), config.dbfilename())
+        };
+        if Path::new(&db_path).exists() {
+            log::info!("Loading RDB file: {}", db_path);
+            load_rdb(&db_path)?;
+        } else {
+            log::debug!("No RDB file found at: {}", db_path);
+        }
+
         Ok(Server {
             listener,
             connections: Vec::new(),

@@ -7,7 +7,7 @@ use nom::{
 
 #[derive(Debug, PartialEq, Clone)]
 #[allow(clippy::upper_case_acronyms)]
-enum OpCode {
+pub(crate) enum OpCode {
     EOF,
     SELECTDB,
     EXPIRETIME,
@@ -16,8 +16,30 @@ enum OpCode {
     AUX,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub(crate) enum ValueTypeEncoding {
+    String,
+    List,
+    Set,
+    SortedSet,
+    Hash,
+    Zipmap,
+    Ziplist,
+    Intset,
+    SortedSetInZiplist,
+    HashmapInZiplist,
+    ListInQuicklist,
+}
+
+/// Helper enum to store either an OpCode or a ValueType
 #[derive(Debug, PartialEq)]
-enum EncodedString<'a> {
+pub(crate) enum ParsedOpCodeOrValueType {
+    OpCode(OpCode),
+    ValueType(ValueTypeEncoding),
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum EncodedString<'a> {
     String(&'a [u8]),
     U8(u8),
     U16(u16),
@@ -25,17 +47,28 @@ enum EncodedString<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-enum EncodedLength {
+pub(crate) enum EncodedLength {
     Length(usize),
     U8(u8),
     U16(u16),
     U32(u32),
 }
 
+impl EncodedLength {
+    pub(crate) fn as_usize(&self) -> usize {
+        match self {
+            EncodedLength::Length(l) => *l,
+            EncodedLength::U8(v) => *v as usize,
+            EncodedLength::U16(v) => *v as usize,
+            EncodedLength::U32(v) => *v as usize,
+        }
+    }
+}
+
 /// Parse header
 ///
 /// Parses the magic string "REDIS" and version, returning the version
-fn nom_rdb_header(input: &[u8]) -> IResult<&[u8], u16> {
+pub(crate) fn nom_rdb_header(input: &[u8]) -> IResult<&[u8], u16> {
     let (input, _) = tag(&b"REDIS"[..]).parse(input)?;
     let (input, version) = map(take(4usize), |v: &[u8]| {
         String::from_utf8_lossy(v).parse::<u16>().unwrap()
@@ -49,14 +82,14 @@ fn nom_rdb_header(input: &[u8]) -> IResult<&[u8], u16> {
 ///
 /// Parse the contents of a metadata section, this does *not* parse the actual OpCode, it is
 /// expected to be matched elsewhere before parsing the actual section itself
-fn nom_metadata_section(input: &[u8]) -> IResult<&[u8], (EncodedString, EncodedString)> {
+pub(crate) fn nom_metadata_section(input: &[u8]) -> IResult<&[u8], (EncodedString, EncodedString)> {
     let (input, key) = nom_size_encoded_string(input)?;
     let (input, value) = nom_size_encoded_string(input)?;
     Ok((input, (key, value)))
 }
 
 /// Parse RDB Op Code
-fn nom_rdb_op_code(input: &[u8]) -> IResult<&[u8], OpCode> {
+pub(crate) fn nom_rdb_op_code(input: &[u8]) -> IResult<&[u8], OpCode> {
     let (input, op_code) = alt((
         value(OpCode::AUX, tag(&[0xFA][..])),
         value(OpCode::RESIZEDB, tag(&[0xFB][..])),
@@ -68,6 +101,34 @@ fn nom_rdb_op_code(input: &[u8]) -> IResult<&[u8], OpCode> {
     .parse(input)?;
 
     Ok((input, op_code))
+}
+
+/// Parse value type
+pub(crate) fn nom_value_type(input: &[u8]) -> IResult<&[u8], ValueTypeEncoding> {
+    let (input, value_type) = alt((
+        value(ValueTypeEncoding::String, tag(&[0x00][..])),
+        value(ValueTypeEncoding::List, tag(&[0x01][..])),
+        value(ValueTypeEncoding::Set, tag(&[0x02][..])),
+        value(ValueTypeEncoding::SortedSet, tag(&[0x03][..])),
+        value(ValueTypeEncoding::Hash, tag(&[0x04][..])),
+        value(ValueTypeEncoding::Zipmap, tag(&[0x09][..])),
+        value(ValueTypeEncoding::Ziplist, tag(&[0x0A][..])),
+        value(ValueTypeEncoding::Intset, tag(&[0x0B][..])),
+        value(ValueTypeEncoding::SortedSetInZiplist, tag(&[0x0C][..])),
+        value(ValueTypeEncoding::HashmapInZiplist, tag(&[0x0D][..])),
+        value(ValueTypeEncoding::ListInQuicklist, tag(&[0x0E][..])),
+    ))
+    .parse(input)?;
+
+    Ok((input, value_type))
+}
+
+pub(crate) fn nom_opcode_or_value_type(input: &[u8]) -> IResult<&[u8], ParsedOpCodeOrValueType> {
+    alt((
+        map(nom_value_type, ParsedOpCodeOrValueType::ValueType),
+        map(nom_rdb_op_code, ParsedOpCodeOrValueType::OpCode),
+    ))
+    .parse(input)
 }
 
 /// Parse size encoding
@@ -98,7 +159,7 @@ fn nom_rdb_op_code(input: &[u8]) -> IResult<&[u8], OpCode> {
 /// NOTE: 8 bits of zeroes are just represented as a single 0 above for brevity
 ///
 /// We return a tuple of the size encoded value and wether it is a stored integer (0b11)
-fn nom_size_encoding(input: &[u8]) -> IResult<&[u8], EncodedLength> {
+pub(crate) fn nom_size_encoding(input: &[u8]) -> IResult<&[u8], EncodedLength> {
     let (input, first_byte) = take(1usize).parse(input)?;
 
     let encoding_type = first_byte[0] >> 6;
@@ -161,7 +222,7 @@ fn nom_size_encoding(input: &[u8]) -> IResult<&[u8], EncodedLength> {
 /// Parse size-encoded string
 ///
 /// Note: We work with values as &[u8], that includes strings
-fn nom_size_encoded_string(input: &[u8]) -> IResult<&[u8], EncodedString> {
+pub(crate) fn nom_size_encoded_string(input: &[u8]) -> IResult<&[u8], EncodedString> {
     let (input, encoded_length) = nom_size_encoding(input)?;
 
     match encoded_length {
@@ -196,6 +257,48 @@ mod tests {
         assert_eq!(nom_rdb_op_code(&[0xFD]), Ok((&b""[..], OpCode::EXPIRETIME)));
         assert_eq!(nom_rdb_op_code(&[0xFE]), Ok((&b""[..], OpCode::SELECTDB)));
         assert_eq!(nom_rdb_op_code(&[0xFF]), Ok((&b""[..], OpCode::EOF)));
+    }
+
+    #[test]
+    fn test_nom_value_type() {
+        assert_eq!(
+            nom_value_type(&[0x00]),
+            Ok((&b""[..], ValueTypeEncoding::String))
+        );
+        assert_eq!(
+            nom_value_type(&[0x01]),
+            Ok((&b""[..], ValueTypeEncoding::List))
+        );
+        assert_eq!(
+            nom_value_type(&[0x02]),
+            Ok((&b""[..], ValueTypeEncoding::Set))
+        );
+    }
+
+    #[test]
+    fn test_nom_opcode_or_value_type() {
+        assert_eq!(
+            nom_opcode_or_value_type(&[0x00]),
+            Ok((
+                &b""[..],
+                ParsedOpCodeOrValueType::ValueType(ValueTypeEncoding::String)
+            ))
+        );
+        assert_eq!(
+            nom_opcode_or_value_type(&[0x01]),
+            Ok((
+                &b""[..],
+                ParsedOpCodeOrValueType::ValueType(ValueTypeEncoding::List)
+            ))
+        );
+        assert_eq!(
+            nom_opcode_or_value_type(&[0xFA]),
+            Ok((&b""[..], ParsedOpCodeOrValueType::OpCode(OpCode::AUX)))
+        );
+        assert_eq!(
+            nom_opcode_or_value_type(&[0xFE]),
+            Ok((&b""[..], ParsedOpCodeOrValueType::OpCode(OpCode::SELECTDB)))
+        );
     }
 
     #[test]
