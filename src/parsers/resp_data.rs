@@ -107,7 +107,7 @@ fn nom_array(input: &[u8]) -> IResult<&[u8], RESPData> {
 }
 
 fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
-    let mut parser = alt((
+    alt((
         nom_simple_string,
         nom_simple_error,
         nom_bulk_string,
@@ -123,15 +123,13 @@ fn nom_data(input: &[u8]) -> IResult<&[u8], RESPData> {
         // nom_attribute,
         // nom_set,
         // nom_push,
-    ));
-
-    parser.parse(input)
+    ))
+    .parse(input)
 }
 
 /// Parse input into `RESPData`
-pub(crate) fn parse_input(input: &[u8]) -> Result<Vec<RESPData>> {
+pub(crate) fn parse(input: &[u8]) -> Result<Vec<RESPData>> {
     let mut data = vec![];
-
     let mut input = input;
 
     while !input.is_empty() {
@@ -140,7 +138,7 @@ pub(crate) fn parse_input(input: &[u8]) -> Result<Vec<RESPData>> {
                 data.push(d);
                 input = remaining;
             }
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(RustisError::InvalidInput(format!("{:?}", err))),
         }
     }
 
@@ -216,30 +214,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_input() {
+    fn test_parse() {
+        assert_eq!(parse(b"+OK\r\n").unwrap()[0], RESPData::SimpleString(b"OK"));
         assert_eq!(
-            parse_input(b"+OK\r\n").unwrap(),
-            RESPData::SimpleString(b"OK")
-        );
-        assert_eq!(
-            parse_input(b"-Error message\r\n").unwrap(),
+            parse(b"-Error message\r\n").unwrap()[0],
             RESPData::SimpleError(b"Error message")
         );
         assert_eq!(
-            parse_input(b"$5\r\nhello\r\n").unwrap(),
+            parse(b"$5\r\nhello\r\n").unwrap()[0],
             RESPData::BulkString(b"hello")
         );
     }
 
     #[test]
-    fn test_parse_input_invalid() {
+    fn test_parse_invalid() {
         assert!(matches!(
-            parse_input(b"invalid input").unwrap_err(),
+            parse(b"invalid input").unwrap_err(),
             RustisError::InvalidInput(_)
         ));
 
         assert!(matches!(
-            parse_input(b"+OK\r\nextra data").unwrap_err(),
+            parse(b"+OK\r\ninvalid input").unwrap_err(),
             RustisError::InvalidInput(_)
         ));
     }

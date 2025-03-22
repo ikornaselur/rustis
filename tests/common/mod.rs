@@ -31,7 +31,7 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    pub fn start() -> Self {
+    pub fn start(extra_args: Option<Vec<&str>>) -> Self {
         let binary_path = get_binary_path();
 
         // Let's bind to a random free port and use that
@@ -40,8 +40,14 @@ impl TestServer {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
+        let port_binding = &port.to_string();
+        let mut args = vec!["--port", port_binding];
+        if let Some(extra_args) = extra_args {
+            args.extend(extra_args);
+        }
+
         let mut child = Command::new(binary_path)
-            .args(["--port", &port.to_string()])
+            .args(args)
             .env("RUST_LOG", "trace")
             .stderr(Stdio::piped())
             .spawn()

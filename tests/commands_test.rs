@@ -5,7 +5,7 @@ use redis::Commands;
 
 #[test]
 fn test_ping() {
-    let server = TestServer::start();
+    let server = TestServer::start(None);
     let client = redis::Client::open(server.connection_string()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
@@ -15,7 +15,7 @@ fn test_ping() {
 
 #[test]
 fn test_set_and_get() {
-    let server = TestServer::start();
+    let server = TestServer::start(None);
     let client = redis::Client::open(server.connection_string()).unwrap();
     let mut conn = client.get_connection().unwrap();
 
@@ -28,7 +28,7 @@ fn test_set_and_get() {
 
 #[test]
 fn test_echo() {
-    let server = TestServer::start();
+    let server = TestServer::start(None);
     let client = redis::Client::open(server.connection_string()).unwrap();
     let mut conn = client.get_connection().unwrap();
 

@@ -16,6 +16,7 @@ So far..
 * SET key value [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds] [NX|XX] [KEEPTTL]
 * GET key
 * CONFIG GET key
+* KEYS *  # Only '*' is supported
 
 ## Usage
 

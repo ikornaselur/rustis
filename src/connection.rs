@@ -1,7 +1,7 @@
 use crate::{
     database::{DBValue, DATABASES},
     error::RustisError,
-    parse::parse_input,
+    parsers,
     resp::RESPData,
     Config, Result,
 };
@@ -111,7 +111,7 @@ impl Connection {
     }
 
     fn process_input(&mut self, buf: &[u8]) -> Result<()> {
-        for data in parse_input(buf)? {
+        for data in parsers::resp_data::parse(buf)? {
             match data {
                 RESPData::SimpleString(s) => self.process_simple_string(s)?,
                 RESPData::Array(array) => self.process_array(&array[..])?,
@@ -190,6 +190,7 @@ impl Connection {
                 b"GET" => self.handle_get(&array[1..])?,
                 b"CONFIG" => self.handle_config(&array[1..])?,
                 b"CLIENT" => self.handle_client(&array[1..])?,
+                b"KEYS" => self.handle_keys(&array[1..])?,
                 _ => todo!(),
             }
         } else {
@@ -245,11 +246,32 @@ impl Connection {
         Ok(())
     }
 
-    fn handle_client(&mut self, args: &[RESPData]) -> Result<()> {
+    fn handle_client(&mut self, _args: &[RESPData]) -> Result<()> {
         log::debug!("Received CLIENT");
 
         // TODO: Set this somewhere.. Now we just tell the client that we've set this
         self.stream.write_all(OK)?;
+
+        Ok(())
+    }
+
+    fn handle_keys(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received KEYS");
+
+        let Some((RESPData::BulkString(pattern), _)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'keys' command");
+        };
+
+        // We will just support '*' for now
+        if pattern != b"*" {
+            return client_error!("only '*' is supported for now");
+        }
+
+        let mut dbs = DATABASES.write().unwrap();
+        if let Some(db) = dbs.get_mut(0) {
+            let keys: Vec<&[u8]> = db.keys().map(|k| k.as_slice()).collect();
+            self.write_array(keys)?;
+        }
 
         Ok(())
     }
@@ -391,6 +413,7 @@ impl Connection {
 
             db.insert(key.to_vec(), DBValue::new(value.to_vec(), ttl));
         }
+        // TODO: Else?
 
         log::trace!("Responding with OK");
         self.stream.write_all(OK)?;
