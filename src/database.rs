@@ -121,10 +121,6 @@ pub fn load_rdb(path: &str) -> Result<()> {
                             String::from_utf8_lossy(value)
                         );
                     }
-                    _ => {
-                        log::warn!("Unhandled OpCode: {:?}", op_code);
-                        break;
-                    }
                 }
             }
             Ok((rest, rdb::ParsedOpCodeOrValueType::ValueType(rdb::ValueTypeEncoding::String))) => {
@@ -155,9 +151,8 @@ pub fn load_rdb(path: &str) -> Result<()> {
                 }
                 // TODO: Handle else??
             }
-            Ok((rest, rdb::ParsedOpCodeOrValueType::ValueType(value_type))) => {
+            Ok((_rest, rdb::ParsedOpCodeOrValueType::ValueType(value_type))) => {
                 log::trace!("Parsed ValueType: {:?}", value_type);
-                input = rest;
                 unimplemented!();
             }
             Err(e) => {
