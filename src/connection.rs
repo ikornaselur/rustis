@@ -190,6 +190,7 @@ impl Connection {
                 b"GET" => self.handle_get(&array[1..])?,
                 b"CONFIG" => self.handle_config(&array[1..])?,
                 b"CLIENT" => self.handle_client(&array[1..])?,
+                b"KEYS" => self.handle_keys(&array[1..])?,
                 _ => todo!(),
             }
         } else {
@@ -250,6 +251,27 @@ impl Connection {
 
         // TODO: Set this somewhere.. Now we just tell the client that we've set this
         self.stream.write_all(OK)?;
+
+        Ok(())
+    }
+
+    fn handle_keys(&mut self, args: &[RESPData]) -> Result<()> {
+        log::debug!("Received KEYS");
+
+        let Some((RESPData::BulkString(pattern), _)) = args.split_first() else {
+            return client_error!("wrong number of arguments for 'keys' command");
+        };
+
+        // We will just support '*' for now
+        if pattern != b"*" {
+            return client_error!("only '*' is supported for now");
+        }
+
+        let mut dbs = DATABASES.write().unwrap();
+        if let Some(db) = dbs.get_mut(0) {
+            let keys: Vec<&[u8]> = db.keys().map(|k| k.as_slice()).collect();
+            self.write_array(keys)?;
+        }
 
         Ok(())
     }
