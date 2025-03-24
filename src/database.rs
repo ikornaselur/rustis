@@ -2,8 +2,12 @@ use crate::error::Result;
 use crate::parsers::rdb;
 use memmap2::Mmap;
 use once_cell::sync::Lazy;
-use std::fs::File;
-use std::{collections::HashMap, sync::RwLock};
+use std::{
+    collections::HashMap,
+    fs::File,
+    sync::RwLock,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const DEFAULT_DATABASES: usize = 16;
 
@@ -37,6 +41,10 @@ pub fn load_rdb(path: &str) -> Result<()> {
     dbs.iter_mut().for_each(|db| {
         db.clear();
     });
+    let mut expiries = EXPIRY.write().unwrap();
+    expiries.iter_mut().for_each(|expiry| {
+        expiry.clear();
+    });
 
     log::trace!("Reading RDB file with Mmap");
     let file = File::open(path)?;
@@ -49,6 +57,11 @@ pub fn load_rdb(path: &str) -> Result<()> {
     log::debug!("RDB version: {}", version);
 
     let mut db_num = 0;
+    let mut key_expiry = None;
+    let current_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
 
     loop {
         match rdb::nom_opcode_or_value_type(input) {
@@ -76,13 +89,14 @@ pub fn load_rdb(path: &str) -> Result<()> {
                         }
                     }
                     rdb::OpCode::RESIZEDB => {
-                        // We'll just read the values, but we're not doing anything with them yet
                         let (rest, hash_table_size) = rdb::nom_size_encoding(input)?;
                         input = rest;
                         log::trace!(
                             "Parsed RESIZEDB OpCode, hash table size: {}",
                             hash_table_size.as_usize()
                         );
+                        let db = dbs.get_mut(db_num).unwrap();
+                        db.reserve(hash_table_size.as_usize());
 
                         let (rest, expiry_hash_table_size) = rdb::nom_size_encoding(input)?;
                         input = rest;
@@ -90,12 +104,21 @@ pub fn load_rdb(path: &str) -> Result<()> {
                             "Parsed RESIZEDB OpCode, expiry hash table size: {}",
                             expiry_hash_table_size.as_usize()
                         );
+                        let expiry = expiries.get_mut(db_num).unwrap();
+                        expiry.reserve(expiry_hash_table_size.as_usize());
                     }
                     rdb::OpCode::EXPIRETIME => {
-                        unimplemented!();
+                        let (rest, expiry) = rdb::nom_le_int(input)?;
+                        input = rest;
+                        key_expiry = Some(expiry as u128 * 1000);
+                        log::trace!("Parsed EXPIRETIME OpCode, expiry: {}", expiry);
                     }
                     rdb::OpCode::EXPIRETIMEMS => {
-                        unimplemented!();
+                        // Read in 8 byte unsigned long (little endian)
+                        let (rest, expiry) = rdb::nom_le_long(input)?;
+                        input = rest;
+                        key_expiry = Some(expiry as u128);
+                        log::trace!("Parsed EXPIRETIMEMS OpCode, expiry: {}", expiry);
                     }
                     rdb::OpCode::AUX => {
                         let (rest, (key, value)) = rdb::nom_metadata_section(input).unwrap();
@@ -143,11 +166,24 @@ pub fn load_rdb(path: &str) -> Result<()> {
                 );
 
                 // Set the value in the current selected db
-                if let Some(db) = dbs.get_mut(db_num) {
-                    // TODO: Handle TTL
-                    db.insert(key.to_vec(), value.to_vec());
+                if let Some(key_expiry) = key_expiry {
+                    if key_expiry < current_timestamp {
+                        log::trace!(
+                            "Key: {:?} has expired, not setting value",
+                            String::from_utf8_lossy(key)
+                        );
+                        continue;
+                    }
+                    log::trace!(
+                        "Setting expiry for key: {:?} to {:?}",
+                        String::from_utf8_lossy(key),
+                        key_expiry
+                    );
+                    let expiry = expiries.get_mut(db_num).unwrap();
+                    expiry.insert(key.to_vec(), key_expiry);
                 }
-                // TODO: Handle else??
+                let db = dbs.get_mut(db_num).unwrap();
+                db.insert(key.to_vec(), value.to_vec());
             }
             Ok((_rest, rdb::ParsedOpCodeOrValueType::ValueType(value_type))) => {
                 log::trace!("Parsed ValueType: {:?}", value_type);

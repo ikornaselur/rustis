@@ -236,6 +236,18 @@ pub(crate) fn nom_size_encoded_string(input: &[u8]) -> IResult<&[u8], EncodedStr
     }
 }
 
+/// Parse little-endian 4-byte unsigned integer
+pub(crate) fn nom_le_int(input: &[u8]) -> IResult<&[u8], u32> {
+    let (input, bytes) = take(4usize).parse(input)?;
+    Ok((input, u32::from_le_bytes(bytes.try_into().unwrap())))
+}
+
+/// Parse little-endian 8-byte unsigned long
+pub(crate) fn nom_le_long(input: &[u8]) -> IResult<&[u8], u64> {
+    let (input, bytes) = take(8usize).parse(input)?;
+    Ok((input, u64::from_le_bytes(bytes.try_into().unwrap())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
