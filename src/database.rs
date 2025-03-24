@@ -5,22 +5,20 @@ use once_cell::sync::Lazy;
 use std::fs::File;
 use std::{collections::HashMap, sync::RwLock};
 
-#[derive(Debug)]
-pub(crate) struct DBValue {
-    pub value: Vec<u8>,
-    pub ttl: Option<u128>,
-}
+const DEFAULT_DATABASES: usize = 16;
 
-impl DBValue {
-    pub fn new(value: Vec<u8>, ttl: Option<u128>) -> Self {
-        Self { value, ttl }
-    }
-}
-
-pub(crate) type Database = HashMap<Vec<u8>, DBValue>;
+pub(crate) type Database = HashMap<Vec<u8>, Vec<u8>>;
+pub(crate) type Expiry = HashMap<Vec<u8>, u128>;
 pub(crate) static DATABASES: Lazy<RwLock<Vec<Database>>> = Lazy::new(|| {
-    let mut dbs = Vec::with_capacity(16);
-    for _ in 0..16 {
+    let mut dbs = Vec::with_capacity(DEFAULT_DATABASES);
+    for _ in 0..DEFAULT_DATABASES {
+        dbs.push(HashMap::new());
+    }
+    RwLock::new(dbs)
+});
+pub(crate) static EXPIRY: Lazy<RwLock<Vec<Expiry>>> = Lazy::new(|| {
+    let mut dbs: Vec<Expiry> = Vec::with_capacity(DEFAULT_DATABASES);
+    for _ in 0..DEFAULT_DATABASES {
         dbs.push(HashMap::new());
     }
     RwLock::new(dbs)
@@ -147,7 +145,7 @@ pub fn load_rdb(path: &str) -> Result<()> {
                 // Set the value in the current selected db
                 if let Some(db) = dbs.get_mut(db_num) {
                     // TODO: Handle TTL
-                    db.insert(key.to_vec(), DBValue::new(value.to_vec(), None));
+                    db.insert(key.to_vec(), value.to_vec());
                 }
                 // TODO: Handle else??
             }
