@@ -1,5 +1,5 @@
 use crate::{
-    database::{DBValue, DATABASES},
+    database::{DATABASES, EXPIRY},
     error::RustisError,
     parsers,
     resp::RESPData,
@@ -381,39 +381,51 @@ impl Connection {
         if nx && xx {
             return client_error!("syntax error");
         }
+        // Can't keep TTL and set it
+        if keep_ttl && ttl.is_some() {
+            return client_error!("syntax error");
+        }
 
         let mut dbs = DATABASES.write().unwrap();
-        if let Some(db) = dbs.get_mut(0) {
-            log::debug!(
-                "SET {:?} = {:?}",
-                String::from_utf8_lossy(key),
-                String::from_utf8_lossy(value)
-            );
+        let db = dbs.get_mut(0).unwrap();
 
-            // If NX is set, then we only set the key if it does not already exist
-            if nx && db.contains_key(&key.to_vec()) {
-                log::trace!("Key already exists");
-                self.stream.write_all(NULL)?;
-                return Ok(());
-            }
+        let mut expiries = EXPIRY.write().unwrap();
+        let expiry = expiries.get_mut(0).unwrap();
 
-            // If XX is set, then we only set the key if it *does* already exist
-            if xx && !db.contains_key(&key.to_vec()) {
-                log::trace!("Key does not exist");
-                self.stream.write_all(NULL)?;
-                return Ok(());
-            }
+        log::debug!(
+            "SET {:?} = {:?}",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(value)
+        );
 
-            // If keep_ttl is set, we need to check if it was previously set to reuse
-            if keep_ttl {
-                if let Some(DBValue { ttl: old_ttl, .. }) = db.get(&key.to_vec()) {
-                    ttl = *old_ttl;
+        // If NX is set, then we only set the key if it does not already exist
+        if nx && db.contains_key(&key.to_vec()) {
+            log::trace!("Key already exists");
+            self.stream.write_all(NULL)?;
+            return Ok(());
+        }
+
+        // If XX is set, then we only set the key if it *does* already exist
+        if xx && !db.contains_key(&key.to_vec()) {
+            log::trace!("Key does not exist");
+            self.stream.write_all(NULL)?;
+            return Ok(());
+        }
+
+        // If keep_ttl is set, we don't need to do anything, right?
+        if !keep_ttl {
+            if let Some(ttl) = ttl {
+                log::trace!("Setting TTL: {}", ttl);
+                expiry.insert(key.to_vec(), ttl);
+            } else {
+                // If neither keep_ttl, we need to ensure we remove the ttl if it's set
+                if expiry.remove(&key.to_vec()).is_some() {
+                    log::trace!("Removing TTL");
                 }
             }
-
-            db.insert(key.to_vec(), DBValue::new(value.to_vec(), ttl));
         }
-        // TODO: Else?
+
+        db.insert(key.to_vec(), value.to_vec());
 
         log::trace!("Responding with OK");
         self.stream.write_all(OK)?;
@@ -429,26 +441,29 @@ impl Connection {
         };
 
         let mut dbs = DATABASES.write().unwrap();
-        if let Some(db) = dbs.get_mut(0) {
-            if let Some(DBValue { value, ttl }) = db.get(&key.to_vec()) {
-                if let Some(ttl) = ttl {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis();
-                    if now > *ttl {
-                        log::debug!("Key has expired");
-                        self.stream.write_all(NULL)?;
-                        db.remove(&key.to_vec());
-                        return Ok(());
-                    }
+        let db = dbs.get_mut(0).unwrap();
+
+        let mut expiries = EXPIRY.write().unwrap();
+        let expiry = expiries.get_mut(0).unwrap();
+
+        if let Some(value) = db.get(&key.to_vec()) {
+            if let Some(ttl) = expiry.get(&key.to_vec()) {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+                if now > *ttl {
+                    log::debug!("Key has expired");
+                    self.stream.write_all(NULL)?;
+                    db.remove(&key.to_vec());
+                    return Ok(());
                 }
-                log::debug!("Found value: {:?}", value);
-                self.write_bulk_string(value)?;
-            } else {
-                log::debug!("Key not found");
-                self.stream.write_all(NULL)?;
             }
+            log::debug!("Found value: {:?}", value);
+            self.write_bulk_string(value)?;
+        } else {
+            log::debug!("Key not found");
+            self.stream.write_all(NULL)?;
         }
 
         Ok(())
